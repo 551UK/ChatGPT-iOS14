@@ -4,7 +4,7 @@
 
 UIViewController *CGCurrentWebRoot(void);
 
-static NSString * const CGRecentsDefaultsKey = @"CGWebRecentsV2";
+static NSString * const CGRecentsDefaultsKey = @"CGWebRecentsV3";
 static NSUInteger const CGRecentsLimit = 120;
 
 static NSString *CGSupportPath(NSString *relativePath) {
@@ -13,13 +13,19 @@ static NSString *CGSupportPath(NSString *relativePath) {
     return [support stringByAppendingPathComponent:relativePath];
 }
 
-static BOOL CGIsChatConversationURLString(NSString *urlString) {
+static BOOL CGIsChatGPTURLString(NSString *urlString) {
     NSURL *url = [NSURL URLWithString:urlString ?: @""];
     if (!url) return NO;
     NSString *host = url.host.lowercaseString ?: @"";
-    if (!([host isEqualToString:@"chatgpt.com"] || [host isEqualToString:@"www.chatgpt.com"])) return NO;
+    return [host isEqualToString:@"chatgpt.com"] || [host isEqualToString:@"www.chatgpt.com"];
+}
+
+static BOOL CGIsChatConversationURLString(NSString *urlString) {
+    NSURL *url = [NSURL URLWithString:urlString ?: @""];
+    if (!url || !CGIsChatGPTURLString(urlString)) return NO;
     NSString *path = url.path.lowercaseString ?: @"";
-    return [path hasPrefix:@"/c/"] || [path containsString:@"/c/"];
+    return [path hasPrefix:@"/c/"] || [path containsString:@"/c/"] ||
+           [path hasPrefix:@"/conversation/"] || [path containsString:@"/conversation/"];
 }
 
 static NSString *CGCleanChatTitle(NSString *title) {
@@ -31,20 +37,42 @@ static NSString *CGCleanChatTitle(NSString *title) {
             break;
         }
     }
-    if (!value.length || [value caseInsensitiveCompare:@"ChatGPT"] == NSOrderedSame || [value caseInsensitiveCompare:@"New chat"] == NSOrderedSame) {
-        return @"Recent chat";
-    }
     return value;
+}
+
+static BOOL CGTitleIsUseful(NSString *title) {
+    NSString *value = CGCleanChatTitle(title);
+    if (!value.length) return NO;
+    NSArray<NSString *> *generic = @[@"chatgpt", @"new chat", @"recent chat", @"openai"];
+    for (NSString *item in generic) {
+        if ([value caseInsensitiveCompare:item] == NSOrderedSame) return NO;
+    }
+    return YES;
+}
+
+static NSString *CGDisplayTitle(NSString *title) {
+    NSString *value = CGCleanChatTitle(title);
+    return CGTitleIsUseful(value) ? value : @"Recent chat";
+}
+
+static NSString *CGIdentityForRecent(NSString *url, NSString *title) {
+    if (CGIsChatConversationURLString(url)) return [@"url:" stringByAppendingString:url];
+    if (CGIsChatGPTURLString(url) && CGTitleIsUseful(title)) {
+        return [@"title:" stringByAppendingString:CGCleanChatTitle(title).lowercaseString];
+    }
+    return nil;
 }
 
 static NSArray<NSDictionary *> *CGReadStoredRecents(void) {
     id value = [NSUserDefaults.standardUserDefaults objectForKey:CGRecentsDefaultsKey];
     if (![value isKindOfClass:NSArray.class]) return @[];
     NSMutableArray *valid = [NSMutableArray array];
-    for (id item in (NSArray *)value) {
-        if (![item isKindOfClass:NSDictionary.class]) continue;
+    for (id raw in (NSArray *)value) {
+        if (![raw isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *item = (NSDictionary *)raw;
         NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : nil;
-        if (!CGIsChatConversationURLString(url)) continue;
+        NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : nil;
+        if (!CGIdentityForRecent(url, title)) continue;
         [valid addObject:item];
     }
     return valid;
@@ -55,25 +83,72 @@ static void CGMergeRecent(NSMutableDictionary<NSString *, NSMutableDictionary *>
                           NSString *title,
                           NSTimeInterval timestamp,
                           BOOL bumpExisting) {
-    if (!CGIsChatConversationURLString(url)) return;
+    NSString *identity = CGIdentityForRecent(url, title);
+    if (!identity.length) return;
     if (timestamp <= 0) timestamp = NSDate.date.timeIntervalSince1970;
 
-    NSString *cleanTitle = CGCleanChatTitle(title);
-    NSMutableDictionary *existing = map[url];
+    NSString *cleanTitle = CGDisplayTitle(title);
+    NSMutableDictionary *existing = map[identity];
     if (!existing) {
-        map[url] = [@{@"url": url,
-                      @"title": cleanTitle,
-                      @"date": @(timestamp)} mutableCopy];
+        map[identity] = [@{@"id": identity,
+                           @"url": url ?: @"https://chatgpt.com/",
+                           @"title": cleanTitle,
+                           @"date": @(timestamp)} mutableCopy];
         return;
     }
 
     NSString *oldTitle = [existing[@"title"] isKindOfClass:NSString.class] ? existing[@"title"] : @"";
-    BOOL newTitleIsUseful = ![cleanTitle isEqualToString:@"Recent chat"];
-    BOOL oldTitleIsGeneric = !oldTitle.length || [oldTitle isEqualToString:@"Recent chat"];
+    BOOL newTitleIsUseful = CGTitleIsUseful(cleanTitle);
+    BOOL oldTitleIsGeneric = !CGTitleIsUseful(oldTitle);
     if (newTitleIsUseful || oldTitleIsGeneric) existing[@"title"] = cleanTitle;
+
+    // If we first saw the page while it was still at chatgpt.com/ and later get
+    // the real /c/... URL, keep the exact conversation URL.
+    NSString *oldURL = [existing[@"url"] isKindOfClass:NSString.class] ? existing[@"url"] : @"";
+    if (CGIsChatConversationURLString(url) || !oldURL.length) existing[@"url"] = url;
 
     NSTimeInterval oldDate = [existing[@"date"] doubleValue];
     if (bumpExisting || timestamp > oldDate) existing[@"date"] = @(timestamp);
+}
+
+static id CGSafeValueForKey(id object, NSString *key) {
+    if (!object || !key.length) return nil;
+    @try {
+        return [object valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static void CGCaptureTabObject(NSMutableDictionary<NSString *, NSMutableDictionary *> *map, id tab, BOOL selected) {
+    if (!tab) return;
+    id rawURL = CGSafeValueForKey(tab, @"url");
+    id rawTitle = CGSafeValueForKey(tab, @"title");
+    NSString *url = [rawURL isKindOfClass:NSString.class] ? rawURL : ([rawURL isKindOfClass:NSURL.class] ? [(NSURL *)rawURL absoluteString] : nil);
+    NSString *title = [rawTitle isKindOfClass:NSString.class] ? rawTitle : @"";
+    if (!url.length) return;
+    CGMergeRecent(map, url, title, NSDate.date.timeIntervalSince1970, selected);
+}
+
+static void CGCaptureFromLiveRoot(NSMutableDictionary<NSString *, NSMutableDictionary *> *map, UIViewController *root) {
+    if (!root) return;
+
+    // Reynard's BrowserViewController owns the live TabManager. On builds where
+    // Swift exposes these properties through KVC this gives us the current URL
+    // and generated ChatGPT title immediately, without waiting for SQLite to flush.
+    id manager = CGSafeValueForKey(root, @"tabManager");
+    if (!manager) return;
+
+    id selected = CGSafeValueForKey(manager, @"selectedTab");
+    CGCaptureTabObject(map, selected, YES);
+
+    id tabs = CGSafeValueForKey(manager, @"regularTabs");
+    if ([tabs isKindOfClass:NSArray.class]) {
+        for (id tab in (NSArray *)tabs) {
+            if (tab == selected) continue;
+            CGCaptureTabObject(map, tab, NO);
+        }
+    }
 }
 
 static void CGCaptureFromHistoryDB(NSMutableDictionary<NSString *, NSMutableDictionary *> *map) {
@@ -140,24 +215,10 @@ static void CGCaptureFromTabDB(NSMutableDictionary<NSString *, NSMutableDictiona
         }
     }
     if (stmt) sqlite3_finalize(stmt);
-
     sqlite3_close(db);
 }
 
-void CGCaptureWebRecents(void) {
-    NSMutableDictionary<NSString *, NSMutableDictionary *> *map = [NSMutableDictionary dictionary];
-    for (NSDictionary *item in CGReadStoredRecents()) {
-        NSString *url = item[@"url"];
-        if (!url.length) continue;
-        map[url] = [item mutableCopy];
-    }
-
-    // Reynard persists the current tab URL and page title on every Gecko
-    // location/title change. This is more reliable for ChatGPT's SPA than browser
-    // history alone, so use it first and keep history as a fallback.
-    CGCaptureFromTabDB(map);
-    CGCaptureFromHistoryDB(map);
-
+static void CGWriteMergedRecents(NSMutableDictionary<NSString *, NSMutableDictionary *> *map) {
     NSArray *sorted = [[map allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         NSTimeInterval da = [a[@"date"] doubleValue];
         NSTimeInterval db = [b[@"date"] doubleValue];
@@ -168,6 +229,28 @@ void CGCaptureWebRecents(void) {
     if (sorted.count > CGRecentsLimit) sorted = [sorted subarrayWithRange:NSMakeRange(0, CGRecentsLimit)];
     [NSUserDefaults.standardUserDefaults setObject:sorted forKey:CGRecentsDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
+}
+
+void CGCaptureWebRecentsFromRoot(UIViewController *root) {
+    NSMutableDictionary<NSString *, NSMutableDictionary *> *map = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in CGReadStoredRecents()) {
+        NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : @"";
+        NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"";
+        NSString *identity = [item[@"id"] isKindOfClass:NSString.class] ? item[@"id"] : CGIdentityForRecent(url, title);
+        if (!identity.length) continue;
+        map[identity] = [item mutableCopy];
+    }
+
+    // Use all three sources. Live tab state is fastest, TabManagement is the
+    // durable current-tab source, and History is a final fallback.
+    CGCaptureFromLiveRoot(map, root);
+    CGCaptureFromTabDB(map);
+    CGCaptureFromHistoryDB(map);
+    CGWriteMergedRecents(map);
+}
+
+void CGCaptureWebRecents(void) {
+    CGCaptureWebRecentsFromRoot(CGCurrentWebRoot());
 }
 
 NSArray<NSDictionary *> *CGWebRecentItems(void) {
@@ -205,7 +288,7 @@ static UIButton *CGFindNewTabButton(UIView *root) {
 
 void CGOpenWebRecentURLString(NSString *urlString) {
     UIViewController *root = CGCurrentWebRoot();
-    if (!root || !CGIsChatConversationURLString(urlString)) return;
+    if (!root || !CGIsChatGPTURLString(urlString)) return;
 
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
@@ -215,7 +298,7 @@ void CGOpenWebRecentURLString(NSString *urlString) {
     UIButton *button = CGFindNewTabButton(root.view);
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.80 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
         [defaults setObject:@"https://chatgpt.com/" forKey:@"default.NewTabSettings.customNewTabURL"];
         [defaults synchronize];

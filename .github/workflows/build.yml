@@ -37,7 +37,7 @@ jobs:
           VERSION="$(cat VERSION | tr -d '[:space:]')"
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. v1.5.4 fixes Recents capture by polling Gecko's live tab state and both Reynard SQLite stores, including chats whose title changes before the final /c/ URL is persisted. Recents are saved continuously instead of only when the menu opens. Startup is also faster because the previous 450 ms new-chat delay has been removed. Native Chat remains selectable and its composer moves above the keyboard. Existing Reynard installations stay separate and untouched."
+          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. v1.5.5 replaces unreliable Gecko/browser-history Recents detection with local prompt capture: the first prompt sent from the ChatGPT composer is saved on-device and shown directly under Recents. A Clear Recents control is included in that section and only clears the local list. Startup now restores the last ChatGPT Gecko tab instead of creating another hidden tab every launch, and the previous one-second history polling has been removed to reduce extra Gecko work and improve coexistence with a separately installed Reynard. Native Chat remains selectable and its composer stays keyboard-safe."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
           else

@@ -37,7 +37,7 @@ jobs:
           VERSION="$(cat VERSION | tr -d '[:space:]')"
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. ChatGPT Web is the default section and uses the bundled Gecko engine directly with no visible browser chrome and no API key. The original Native Chat interface remains selectable from the menu for users who want the API mode. Uses its own ChatGPT app identity and icon, so an existing Reynard installation stays separate and untouched."
+          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. ChatGPT Web opens by default through the bundled Gecko engine with no browser chrome or API key. The top-left menu includes searchable web conversation history using ChatGPT's page titles, and tapping an entry reopens that conversation. Native Chat remains selectable and its composer moves above the keyboard. Existing Reynard installations stay separate and untouched."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
           else

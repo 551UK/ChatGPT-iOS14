@@ -1,8 +1,7 @@
 # ChatGPT for iOS 14
 
-A simple ChatGPT app for jailbroken iOS 14.
+ChatGPT for jailbroken iOS 14 using bundled Gecko.
 
-- Uses the real ChatGPT website through bundled Gecko
-- No separate Reynard app needed
-- No OpenAI API key needed for ChatGPT Web
+- ChatGPT Web works without installing Reynard separately
+- No API key needed for ChatGPT Web
 - Includes Recents and optional Native Chat

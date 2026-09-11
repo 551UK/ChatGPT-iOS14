@@ -19,7 +19,7 @@
     <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
     <key>NSPhotoLibraryUsageDescription</key><string>Attach photos to your ChatGPT conversation.</string>
     <key>NSCameraUsageDescription</key><string>Take a photo to attach to your ChatGPT conversation.</string>
-    <key>NSMicrophoneUsageDescription</key><string>Use your microphone for voice dictation.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Use your microphone for dictation and live ChatGPT voice conversations.</string>
     <key>NSSpeechRecognitionUsageDescription</key><string>Convert your speech into a message.</string>
     <key>CFBundleIcons</key>
     <dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array></dict></dict>

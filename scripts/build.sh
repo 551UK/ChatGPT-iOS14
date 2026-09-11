@@ -156,6 +156,7 @@ CLANG="$(xcrun --sdk iphoneos --find clang)"
     "$ROOT/Tweak/ChatGPTShellCore.m" \
     "$ROOT/Tweak/ChatGPTShellMenu.m" \
     "$ROOT/Tweak/ChatGPTWebHistory.m" \
+    "$ROOT/Tweak/ChatGPTTabRestore.m" \
     "$ROOT/Tweak/ChatGPTSettingsPatch.m" \
     -o "$TWEAK_DIR/ChatGPTShell.dylib"
 cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTShell.plist"
@@ -181,7 +182,7 @@ Package: com.551.chatgpt14
 Name: ChatGPT iOS 14
 Version: $VERSION
 Architecture: iphoneos-arm
-Description: ChatGPT-style client for rootful iOS 14. ChatGPT Web is the default and is rendered by a bundled Gecko engine with no browser chrome or API key. Includes searchable web conversation history and optional Native Chat.
+Description: ChatGPT for jailbroken iOS 14, powered by bundled Gecko.
 Maintainer: 551UK
 Author: 551UK
 Section: Applications

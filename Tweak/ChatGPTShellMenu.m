@@ -3,7 +3,9 @@
 #import <objc/runtime.h>
 
 UIViewController *CGCurrentWebRoot(void);
-void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeMode, UIViewController *webRoot);
+void CGCaptureWebRecents(void);
+NSArray<NSDictionary *> *CGWebRecentItems(void);
+void CGOpenWebRecentURLString(NSString *urlString);
 
 @class CGConversation;
 @interface CGStore : NSObject
@@ -27,10 +29,13 @@ void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeM
 @interface CGSettingsViewController : UITableViewController
 @end
 
-@interface CGUnifiedMenuController : UITableViewController
+@interface CGUnifiedMenuController : UITableViewController <UISearchResultsUpdating>
 @property (nonatomic, weak) UIViewController *webRoot;
 @property (nonatomic, weak) CGChatViewController *nativeChat;
 @property (nonatomic, assign) BOOL nativeMode;
+@property (nonatomic, copy) NSArray<NSDictionary *> *allWebRecents;
+@property (nonatomic, copy) NSArray<NSDictionary *> *webRecents;
+@property (nonatomic, strong) UISearchController *searchController;
 @end
 
 @implementation CGUnifiedMenuController
@@ -43,43 +48,101 @@ void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeM
     [super viewDidLoad];
     self.title = @"ChatGPT";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(done)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"] style:UIBarButtonItemStylePlain target:self action:@selector(searchTapped)];
+
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.searchBar.placeholder = @"Search chats";
+    self.definesPresentationContext = YES;
+
+    [self reloadWebRecents];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadWebRecents];
+
+    // The Gecko tab store writes location/title changes asynchronously. A quick
+    // second pass means a just-created ChatGPT title appears without reopening the menu.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf reloadWebRecents];
+    });
 }
 
 - (void)done {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+- (void)searchTapped {
+    if (!self.navigationItem.searchController) {
+        self.navigationItem.searchController = self.searchController;
+        self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    }
+    self.searchController.active = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.searchController.searchBar becomeFirstResponder];
+    });
+}
+
+- (void)reloadWebRecents {
+    CGCaptureWebRecents();
+    self.allWebRecents = CGWebRecentItems();
+    [self applyRecentSearch:self.searchController.searchBar.text ?: @""];
+}
+
+- (void)applyRecentSearch:(NSString *)query {
+    NSString *needle = [query stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!needle.length) {
+        self.webRecents = self.allWebRecents ?: @[];
+    } else {
+        NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *item, NSDictionary *bindings) {
+            NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"";
+            return [title rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound;
+        }];
+        self.webRecents = [self.allWebRecents filteredArrayUsingPredicate:predicate];
+    }
+    [self.tableView reloadData];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    [self applyRecentSearch:searchController.searchBar.text ?: @""];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 2;
+    return 3;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 4 : CGStore.shared.conversations.count;
+    if (section == 0) return 3;
+    if (section == 1) return self.webRecents.count;
+    return CGStore.shared.conversations.count;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 1 ? @"Native chats" : nil;
+    if (section == 1) return @"Recents";
+    if (section == 2 && CGStore.shared.conversations.count) return @"Native chats";
+    return nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"ChatGPT Web is the default and uses the bundled Gecko engine with your normal ChatGPT account. History shows web conversations opened in this app. Native Chat is optional and uses an OpenAI API key.";
+    if (section == 0) return @"ChatGPT Web uses your normal ChatGPT account through the bundled Gecko engine. Native Chat is optional and uses an OpenAI API key.";
+    if (section == 1 && self.allWebRecents.count == 0) return @"Chats you start in ChatGPT Web will appear here automatically.";
     return nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)ip {
-    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     if (ip.section == 0) {
-        NSArray *names = @[@"ChatGPT Web", @"History", @"Native Chat", @"Settings"];
-        NSArray *icons = @[@"globe", @"clock.arrow.circlepath", @"message", @"gearshape"];
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        NSArray *names = @[@"ChatGPT Web", @"Native Chat", @"Settings"];
+        NSArray *icons = @[@"globe", @"message", @"gearshape"];
         cell.textLabel.text = names[ip.row];
         cell.imageView.image = [UIImage systemImageNamed:icons[ip.row]];
         if (ip.row == 0) {
             cell.detailTextLabel.text = @"Normal ChatGPT account • Gecko";
             cell.accessoryType = self.nativeMode ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryCheckmark;
         } else if (ip.row == 1) {
-            cell.detailTextLabel.text = @"Web conversation history";
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        } else if (ip.row == 2) {
             cell.detailTextLabel.text = @"Optional API chat";
             cell.accessoryType = self.nativeMode ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryDisclosureIndicator;
         } else {
@@ -88,6 +151,17 @@ void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeM
         return cell;
     }
 
+    if (ip.section == 1) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        NSDictionary *item = self.webRecents[ip.row];
+        NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"Recent chat";
+        cell.textLabel.text = title.length ? title : @"Recent chat";
+        cell.textLabel.numberOfLines = 1;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     CGConversation *conversation = CGStore.shared.conversations[ip.row];
     cell.textLabel.text = conversation.title ?: @"New chat";
     cell.imageView.image = [UIImage systemImageNamed:@"message"];
@@ -129,34 +203,53 @@ void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeM
     }];
 }
 
-- (void)showHistory {
-    CGPushWebHistory(self.navigationController, self.nativeMode, self.webRoot ?: CGCurrentWebRoot());
-}
-
 - (void)showSettings {
     CGSettingsViewController *settings = [CGSettingsViewController new];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+- (void)openRecentAtIndex:(NSUInteger)index {
+    if (index >= self.webRecents.count) return;
+    NSDictionary *item = self.webRecents[index];
+    NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : nil;
+    if (!url.length) return;
+
+    UIViewController *web = self.webRoot ?: CGCurrentWebRoot();
+    BOOL nativeMode = self.nativeMode;
+    UINavigationController *menuNav = self.navigationController;
+    [menuNav dismissViewControllerAnimated:YES completion:^{
+        if (nativeMode && web.presentedViewController) {
+            [web dismissViewControllerAnimated:YES completion:^{
+                CGOpenWebRecentURLString(url);
+            }];
+        } else {
+            CGOpenWebRecentURLString(url);
+        }
+    }];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 0) {
         if (ip.row == 0) [self showWebChat];
-        else if (ip.row == 1) [self showHistory];
-        else if (ip.row == 2) [self showNativeChat:nil];
+        else if (ip.row == 1) [self showNativeChat:nil];
         else [self showSettings];
+        return;
+    }
+    if (ip.section == 1) {
+        [self openRecentAtIndex:ip.row];
         return;
     }
     if (ip.row < CGStore.shared.conversations.count) [self showNativeChat:CGStore.shared.conversations[ip.row]];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)ip {
-    return ip.section == 1;
+    return ip.section == 2;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)ip {
-    if (style != UITableViewCellEditingStyleDelete || ip.section != 1 || ip.row >= CGStore.shared.conversations.count) return;
+    if (style != UITableViewCellEditingStyleDelete || ip.section != 2 || ip.row >= CGStore.shared.conversations.count) return;
     [CGStore.shared deleteConversation:CGStore.shared.conversations[ip.row]];
     [tableView reloadData];
     [self.nativeChat reloadConversation];

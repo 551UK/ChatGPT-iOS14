@@ -144,6 +144,8 @@ CLANG="$(xcrun --sdk iphoneos --find clang)"
     -Wno-deprecated-declarations \
     -framework Foundation \
     -framework UIKit \
+    -framework CoreGraphics \
+    -framework QuartzCore \
     -framework Security \
     -framework Speech \
     -framework AVFoundation \

@@ -9,6 +9,7 @@ static __weak UIViewController *CGWebRoot = nil;
 
 extern void CGPresentUnifiedMenu(UIViewController *presenter, BOOL nativeMode, id nativeChatController);
 extern void CGCaptureWebRecentsFromRoot(UIViewController *root);
+extern void CGResetLocalPromptCapture(void);
 
 UIViewController *CGCurrentWebRoot(void) {
     return CGWebRoot;
@@ -47,13 +48,36 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     return nil;
 }
 
+static id CGSafeValueForKey(id object, NSString *key) {
+    if (!object || !key.length) return nil;
+    @try {
+        return [object valueForKey:key];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static NSString *CGSelectedTabURL(UIViewController *root) {
+    id manager = CGSafeValueForKey(root, @"tabManager");
+    id selected = CGSafeValueForKey(manager, @"selectedTab");
+    id rawURL = CGSafeValueForKey(selected, @"url");
+    if ([rawURL isKindOfClass:NSString.class]) return rawURL;
+    if ([rawURL isKindOfClass:NSURL.class]) return [(NSURL *)rawURL absoluteString];
+    return nil;
+}
+
+static BOOL CGURLIsChatGPT(NSString *urlString) {
+    NSURL *url = [NSURL URLWithString:urlString ?: @""];
+    NSString *host = url.host.lowercaseString ?: @"";
+    return [host isEqualToString:@"chatgpt.com"] || [host isEqualToString:@"www.chatgpt.com"];
+}
+
 @interface CGShellCoordinator : NSObject
 @property (nonatomic, weak) UIViewController *root;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) NSTimer *recentsTimer;
 @property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -65,10 +89,6 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 - (instancetype)initWithRoot:(UIViewController *)root {
     if ((self = [super init])) _root = root;
     return self;
-}
-
-- (void)dealloc {
-    [self.recentsTimer invalidate];
 }
 
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -111,20 +131,10 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
 
-    // Start the real ChatGPT page as soon as Reynard's hidden new-tab control
-    // exists. v1.5.1 waited another 450 ms after that point, which made the
-    // composer visibly lag behind the app shell.
+    // Reuse the restored ChatGPT tab when one already exists. Older builds
+    // created another hidden Gecko tab on every app launch, which added a visible
+    // startup delay and extra Gecko work in memory.
     [self seedWebChatIfNeeded];
-
-    // ChatGPT is a single-page app. Capture the live Gecko tab repeatedly so a
-    // newly-created /c/... URL and the generated conversation title are saved as
-    // soon as either appears, rather than only when the menu is opened.
-    __weak typeof(self) weakSelf = self;
-    self.recentsTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self || !self.root.view.window) return;
-        CGCaptureWebRecentsFromRoot(self.root);
-    }];
 }
 
 - (void)openMenu {
@@ -134,6 +144,7 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 
 - (void)newWebChat {
     CGCaptureWebRecentsFromRoot(self.root);
+    CGResetLocalPromptCapture();
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
@@ -141,28 +152,23 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 - (void)seedWebChatIfNeeded {
     if (self.didSeedWebChat) return;
 
+    NSString *restoredURL = CGSelectedTabURL(self.root);
+    if (CGURLIsChatGPT(restoredURL)) {
+        self.didSeedWebChat = YES;
+        return;
+    }
+
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (!button) {
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [weakSelf seedWebChatIfNeeded];
         });
         return;
     }
 
     self.didSeedWebChat = YES;
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
-        UIButton *readyButton = CGFindButtonForAction(self.root.view, @"newTabTapped");
-        if (!readyButton) {
-            self.didSeedWebChat = NO;
-            [self seedWebChatIfNeeded];
-            return;
-        }
-        [readyButton sendActionsForControlEvents:UIControlEventTouchUpInside];
-    });
+    [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
 - (void)layoutShell {

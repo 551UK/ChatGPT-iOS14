@@ -38,6 +38,7 @@ jobs:
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
           NOTES="ChatGPT for jailbroken iOS 14. Uses bundled Gecko so ChatGPT Web works without installing Reynard separately or using an API key."
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
             gh release edit "$TAG" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"
@@ -45,7 +46,9 @@ jobs:
             gh release create "$TAG" "$DEB" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"
           fi
 
-          # Keep only the newest .deb release asset.
-          for ASSET_ID in $(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name != \"$TAG\") | .assets[] | select(.name | endswith(\".deb\")) | .id"); do
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID"
+          # Keep only the current release and tag. Remove all older release history.
+          for OLD_TAG in $(gh release list --limit 100 --json tagName --jq '.[].tagName'); do
+            if [ "$OLD_TAG" != "$TAG" ]; then
+              gh release delete "$OLD_TAG" --cleanup-tag --yes
+            fi
           done

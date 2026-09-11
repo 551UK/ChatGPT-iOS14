@@ -10,6 +10,11 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
+    // Reuse the last ChatGPT tab on later launches instead of creating a new
+    // hidden Gecko tab every single time. This cuts out the artificial startup
+    // delay while still letting the shell create ChatGPT on the first run.
+    [defaults setObject:@"lastTab" forKey:@"default.HomepageSettings.openingScreen"];
+
     [defaults setBool:NO forKey:@"default.HomepageSettings.showsRecommendations"];
     [defaults setBool:NO forKey:@"default.HomepageSettings.showsNewUpdates"];
     [defaults setBool:NO forKey:@"default.HomepageSettings.showsFavorites"];

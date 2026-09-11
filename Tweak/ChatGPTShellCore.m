@@ -10,6 +10,7 @@ static __weak UIViewController *CGWebRoot = nil;
 extern void CGPresentUnifiedMenu(UIViewController *presenter, BOOL nativeMode, id nativeChatController);
 extern void CGCaptureWebRecentsFromRoot(UIViewController *root);
 extern void CGResetLocalPromptCapture(void);
+extern NSString *CGStoredSelectedWebURL(void);
 
 UIViewController *CGCurrentWebRoot(void) {
     return CGWebRoot;
@@ -45,24 +46,6 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
         UIButton *found = CGFindButtonForAction(subview, needle);
         if (found) return found;
     }
-    return nil;
-}
-
-static id CGSafeValueForKey(id object, NSString *key) {
-    if (!object || !key.length) return nil;
-    @try {
-        return [object valueForKey:key];
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
-}
-
-static NSString *CGSelectedTabURL(UIViewController *root) {
-    id manager = CGSafeValueForKey(root, @"tabManager");
-    id selected = CGSafeValueForKey(manager, @"selectedTab");
-    id rawURL = CGSafeValueForKey(selected, @"url");
-    if ([rawURL isKindOfClass:NSString.class]) return rawURL;
-    if ([rawURL isKindOfClass:NSURL.class]) return [(NSURL *)rawURL absoluteString];
     return nil;
 }
 
@@ -131,9 +114,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
 
-    // Reuse the restored ChatGPT tab when one already exists. Older builds
-    // created another hidden Gecko tab on every app launch, which added a visible
-    // startup delay and extra Gecko work in memory.
+    // Read Reynard's persisted selected-tab URL directly from its own SQLite
+    // store. The previous KVC lookup could not see Swift's private Tab object,
+    // so it wrongly created another hidden tab on every launch.
     [self seedWebChatIfNeeded];
 }
 
@@ -152,7 +135,7 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 - (void)seedWebChatIfNeeded {
     if (self.didSeedWebChat) return;
 
-    NSString *restoredURL = CGSelectedTabURL(self.root);
+    NSString *restoredURL = CGStoredSelectedWebURL();
     if (CGURLIsChatGPT(restoredURL)) {
         self.didSeedWebChat = YES;
         return;
@@ -167,6 +150,8 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
         return;
     }
 
+    // On the very first launch there is no persisted ChatGPT tab yet, so create
+    // one immediately. Later launches reuse the stored Gecko tab instead.
     self.didSeedWebChat = YES;
     [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }

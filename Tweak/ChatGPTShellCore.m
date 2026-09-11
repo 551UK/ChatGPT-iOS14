@@ -51,7 +51,7 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 @property (nonatomic, weak) UIViewController *root;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) UIButton *menuButton;
-@property (nonatomic, strong) UIButton *newButton;
+@property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -89,9 +89,9 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     self.menuButton.accessibilityLabel = @"ChatGPT menu";
     [header addSubview:self.menuButton];
 
-    self.newButton = [self buttonWithSymbol:@"square.and.pencil" action:@selector(newWebChat)];
-    self.newButton.accessibilityLabel = @"New chat";
-    [header addSubview:self.newButton];
+    self.composeButton = [self buttonWithSymbol:@"square.and.pencil" action:@selector(newWebChat)];
+    self.composeButton.accessibilityLabel = @"New chat";
+    [header addSubview:self.composeButton];
 
     UILabel *title = [UILabel new];
     title.text = @"ChatGPT";
@@ -165,7 +165,7 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     CGFloat headerHeight = 44.0;
     self.header.frame = CGRectMake(0, safe.top, width, headerHeight);
     self.menuButton.frame = CGRectMake(7, 2, 44, 40);
-    self.newButton.frame = CGRectMake(width - 51, 2, 44, 40);
+    self.composeButton.frame = CGRectMake(width - 51, 2, 44, 40);
     self.titleLabel.frame = CGRectMake(58, 0, MAX(0, width - 116), headerHeight);
 
     if (content) {

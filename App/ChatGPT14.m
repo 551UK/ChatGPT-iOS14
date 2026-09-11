@@ -12,3 +12,4 @@
 #include "Parts/Views.inc"
 #include "Parts/ChatA.inc"
 #include "Parts/ChatB.inc"
+#include "Parts/VoiceIntegration.inc"

@@ -21,41 +21,47 @@ DOC_DIR="$PKG/usr/share/doc/com.551.chatgpt14"
 rm -rf "$BUILD"
 mkdir -p "$WORK" "$PKG/DEBIAN" "$TOOLS" "$TWEAK_DIR" "$DOC_DIR"
 
+# Use Reynard only as the Gecko runtime underneath our ChatGPT UI. The visible
+# browser chrome is hidden at runtime by ChatGPTShell.dylib.
 curl -L --fail --retry 3 --retry-delay 2 "$REYNARD_URL" -o "$WORK/Reynard-Jailbroken.ipa"
 mkdir -p "$WORK/reynard-unpacked"
 unzip -q "$WORK/Reynard-Jailbroken.ipa" -d "$WORK/reynard-unpacked"
 REYNARD_APP="$(find "$WORK/reynard-unpacked/Payload" -maxdepth 1 -type d -name '*.app' | head -1)"
 if [ -z "$REYNARD_APP" ] || [ ! -d "$REYNARD_APP" ]; then
-    echo "Could not find Reynard.app in the upstream IPA" >&2
+    echo "Could not find the Gecko host app" >&2
     exit 1
 fi
 
-# Make the bundled Gecko client a genuinely separate app from a normal Reynard
-# installation. This avoids LaunchServices treating them as the same application.
+# Give the ChatGPT client its own identity so a normal Reynard installation can
+# remain installed and untouched.
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $APP_BUNDLE_ID" "$REYNARD_APP/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ChatGPT" "$REYNARD_APP/Info.plist" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ChatGPT" "$REYNARD_APP/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ChatGPT" "$REYNARD_APP/Info.plist" 2>/dev/null || true
 
-# Do not claim Reynard's URL schemes. The ChatGPT wrapper does not need them and
-# leaving them in would create a second collision with the user's Reynard install.
-/usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+# The optional native section can use camera, photo, microphone and dictation.
+set_plist_string() {
+    local key="$1"
+    local value="$2"
+    /usr/libexec/PlistBuddy -c "Set :$key $value" "$REYNARD_APP/Info.plist" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Add :$key string $value" "$REYNARD_APP/Info.plist"
+}
+set_plist_string NSCameraUsageDescription "Attach a photo to Native Chat."
+set_plist_string NSPhotoLibraryUsageDescription "Choose a photo for Native Chat."
+set_plist_string NSMicrophoneUsageDescription "Use voice input in Native Chat."
+set_plist_string NSSpeechRecognitionUsageDescription "Turn speech into text in Native Chat."
 
-# The Open In share extension depends on Reynard's custom URL scheme. It is not
-# needed for this single-site ChatGPT client, so remove it instead of letting it
-# compete with the real Reynard app.
+# Do not claim Reynard's URL schemes. The ChatGPT shell does not need them.
+/usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$REYNARD_APP/Info.plist" 2>/dev/null || true
 rm -rf "$REYNARD_APP/PlugIns/OpenIn.appex" 2>/dev/null || true
 
 HELPER_APPEX="$REYNARD_APP/PlugIns/Reynard Helper.appex"
 if [ ! -d "$HELPER_APPEX" ]; then
-    echo "Could not find Reynard Gecko helper extension" >&2
+    echo "Could not find Gecko helper extension" >&2
     exit 1
 fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $HELPER_BUNDLE_ID" "$HELPER_APPEX/Info.plist"
 
-# Update the application-identifier entitlements to match the new bundle IDs before
-# TrollStore signs the IPA. This keeps Gecko's main process and helper process valid
-# while allowing the original Reynard bundle to remain installed alongside ChatGPT.
 resign_bundle() {
     local bundle="$1"
     local app_id="$2"
@@ -88,10 +94,19 @@ resign_bundle() {
 
 resign_bundle "$HELPER_APPEX" "$HELPER_BUNDLE_ID"
 resign_bundle "$REYNARD_APP" "$APP_BUNDLE_ID"
-python3 "$ROOT/scripts/make_icon.py" "$REYNARD_APP"
 
-# Rename the payload folder too. The executable can remain named Reynard internally;
-# the bundle and Home Screen identity are ChatGPT.
+# Install a dedicated ChatGPT-style icon. iOS 14 can otherwise keep taking the
+# upstream asset-catalog icon through CFBundleIconName.
+python3 "$ROOT/scripts/make_icon.py" "$REYNARD_APP"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIconFiles" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles array" "$REYNARD_APP/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles:0 string AppIcon60x60" "$REYNARD_APP/Info.plist"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon60x60" "$REYNARD_APP/Info.plist" 2>/dev/null || true
+
 CHATGPT_APP="$WORK/reynard-unpacked/Payload/ChatGPT.app"
 if [ "$REYNARD_APP" != "$CHATGPT_APP" ]; then
     rm -rf "$CHATGPT_APP"
@@ -104,21 +119,21 @@ CHATGPT_IPA="$TOOLS/ChatGPT-Gecko.ipa"
     zip -qry "$CHATGPT_IPA" Payload
 )
 
-# Bundle TrollStore's root installer privately. It is used only to install/register
-# the embedded IPA correctly; no separate TrollStore or Reynard app is required.
+# Bundle only the root installer helper needed to register the contained app.
 curl -L --fail --retry 3 --retry-delay 2 "$TROLLSTORE_URL" -o "$WORK/TrollStore.tar"
 mkdir -p "$WORK/trollstore"
 tar -xzf "$WORK/TrollStore.tar" -C "$WORK/trollstore"
 TS_APP="$(find "$WORK/trollstore" -maxdepth 2 -type d -name 'TrollStore.app' | head -1)"
 if [ -z "$TS_APP" ] || [ ! -x "$TS_APP/trollstorehelper" ]; then
-    echo "Could not find TrollStore root helper" >&2
+    echo "Could not find app registration helper" >&2
     exit 1
 fi
 ditto "$TS_APP" "$TOOLS/TrollStore.app"
 chmod 0755 "$TOOLS/TrollStore.app/trollstorehelper"
 
-# Bootstrap only our ChatGPT bundle. The user's normal Reynard process is no longer
-# touched by this tweak.
+# Build the ChatGPT shell. The old v1 ChatGPT UI is linked back in only for the
+# selectable Native Chat section. The default Web section is the real chatgpt.com
+# page rendered by Gecko; browser chrome, address bars and tab UI are hidden.
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 CLANG="$(xcrun --sdk iphoneos --find clang)"
 "$CLANG" \
@@ -126,13 +141,23 @@ CLANG="$(xcrun --sdk iphoneos --find clang)"
     -isysroot "$SDK" \
     -miphoneos-version-min=14.0 \
     -fobjc-arc -fblocks -O2 -dynamiclib \
-    -framework Foundation -framework UIKit \
+    -Wno-deprecated-declarations \
+    -framework Foundation \
+    -framework UIKit \
+    -framework Security \
+    -framework Speech \
+    -framework AVFoundation \
+    -framework WebKit \
     "$ROOT/Tweak/ChatGPTGeckoBootstrap.m" \
-    -o "$TWEAK_DIR/ChatGPTGeckoBootstrap.dylib"
-cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTGeckoBootstrap.plist"
-chmod 0755 "$TWEAK_DIR/ChatGPTGeckoBootstrap.dylib"
+    "$ROOT/Tweak/NativeChatSupport.m" \
+    "$ROOT/Tweak/ChatGPTShellCore.m" \
+    "$ROOT/Tweak/ChatGPTShellMenu.m" \
+    "$ROOT/Tweak/ChatGPTSettingsPatch.m" \
+    -o "$TWEAK_DIR/ChatGPTShell.dylib"
+cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTShell.plist"
+chmod 0755 "$TWEAK_DIR/ChatGPTShell.dylib"
 if command -v ldid >/dev/null 2>&1; then
-    ldid -S "$TWEAK_DIR/ChatGPTGeckoBootstrap.dylib"
+    ldid -S "$TWEAK_DIR/ChatGPTShell.dylib"
 fi
 
 curl -L --fail --retry 3 \
@@ -142,9 +167,9 @@ curl -L --fail --retry 3 \
     "https://raw.githubusercontent.com/opa334/TrollStore/${TROLLSTORE_VERSION}/LICENSE" \
     -o "$DOC_DIR/TROLLSTORE-LICENSE.txt"
 cat > "$DOC_DIR/SOURCES.txt" <<SOURCE
-Reynard Browser ${REYNARD_VERSION}: https://github.com/minh-ton/reynard-browser/tree/${REYNARD_VERSION}
-TrollStore ${TROLLSTORE_VERSION}: https://github.com/opa334/TrollStore/tree/${TROLLSTORE_VERSION}
-ChatGPT iOS 14 bootstrap/package: https://github.com/551UK/ChatGPT-iOS14
+Gecko runtime derived from Reynard Browser ${REYNARD_VERSION}: https://github.com/minh-ton/reynard-browser/tree/${REYNARD_VERSION}
+Registration helper from TrollStore ${TROLLSTORE_VERSION}: https://github.com/opa334/TrollStore/tree/${TROLLSTORE_VERSION}
+ChatGPT shell/native UI source: https://github.com/551UK/ChatGPT-iOS14
 SOURCE
 
 cat > "$PKG/DEBIAN/control" <<CONTROL
@@ -152,7 +177,7 @@ Package: com.551.chatgpt14
 Name: ChatGPT iOS 14
 Version: $VERSION
 Architecture: iphoneos-arm
-Description: Self-contained Gecko-powered ChatGPT client for rootful iOS 14. Uses its own app identity, so ChatGPT and Reynard can be installed together. No OpenAI API key is required.
+Description: ChatGPT-style client for rootful iOS 14. ChatGPT Web is the default and is rendered by a bundled Gecko engine with no browser chrome or API key. Optional Native Chat remains selectable from the menu.
 Maintainer: 551UK
 Author: 551UK
 Section: Applications
@@ -171,26 +196,22 @@ BUNDLE_ID="com.551.chatgpt14"
 {
     echo "=== ChatGPT iOS 14 install ==="
     date
-
-    # Clean only obsolete ChatGPT system-app copies. Never remove Reynard: it is a
-    # separate application and may already be installed by the user.
     rm -rf /Applications/ChatGPT.app >/dev/null 2>&1 || true
 
     if [ ! -x "$HELPER" ]; then
-        echo "ERROR: bundled installer helper is missing"
+        echo "ERROR: bundled registration helper is missing"
         exit 90
     fi
     if [ ! -f "$IPA" ]; then
-        echo "ERROR: bundled ChatGPT Gecko IPA is missing"
+        echo "ERROR: bundled ChatGPT app is missing"
         exit 91
     fi
 
     "$HELPER" uninstall custom "$BUNDLE_ID" >/dev/null 2>&1 || true
-    echo "Installing separate ChatGPT Gecko app..."
+    echo "Installing ChatGPT app with bundled Gecko engine..."
     "$HELPER" install custom force "$IPA"
     RET=$?
     echo "Installer returned: $RET"
-
     if [ "$RET" -ne 0 ]; then
         echo "ERROR: ChatGPT app installation failed with code $RET"
         exit "$RET"
@@ -200,7 +221,7 @@ BUNDLE_ID="com.551.chatgpt14"
     if command -v uicache >/dev/null 2>&1; then
         uicache -a >/dev/null 2>&1 || true
     fi
-    echo "Install completed successfully. Reynard was left untouched."
+    echo "Install completed successfully. Existing Reynard installation was left untouched."
 } >"$LOG" 2>&1
 RET=$?
 chown mobile:mobile "$LOG" >/dev/null 2>&1 || true

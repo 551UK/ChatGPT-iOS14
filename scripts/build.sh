@@ -34,7 +34,7 @@ Package: com.551.chatgpt14
 Name: ChatGPT iOS 14
 Version: $VERSION
 Architecture: iphoneos-arm
-Description: Native ChatGPT-style client for rootful iOS 14 with streaming, images, files, tools, voice dictation and local chat history.
+Description: Native ChatGPT-style client for rootful iOS 14 with streaming chat, web search, images, files, tools, dictation, live voice and local chat history.
 Maintainer: 551UK
 Author: 551UK
 Section: Applications

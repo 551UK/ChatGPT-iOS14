@@ -6,6 +6,7 @@ UIViewController *CGCurrentWebRoot(void);
 void CGCaptureWebRecents(void);
 NSArray<NSDictionary *> *CGWebRecentItems(void);
 void CGOpenWebRecentURLString(NSString *urlString);
+void CGClearWebRecents(void);
 
 @class CGConversation;
 @interface CGStore : NSObject
@@ -62,13 +63,6 @@ void CGOpenWebRecentURLString(NSString *urlString);
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadWebRecents];
-
-    // The Gecko tab store writes location/title changes asynchronously. A quick
-    // second pass means a just-created ChatGPT title appears without reopening the menu.
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf reloadWebRecents];
-    });
 }
 
 - (void)done {
@@ -116,7 +110,7 @@ void CGOpenWebRecentURLString(NSString *urlString);
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 3;
-    if (section == 1) return self.webRecents.count;
+    if (section == 1) return self.webRecents.count + (self.allWebRecents.count ? 1 : 0);
     return CGStore.shared.conversations.count;
 }
 
@@ -128,7 +122,7 @@ void CGOpenWebRecentURLString(NSString *urlString);
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return @"ChatGPT Web uses your normal ChatGPT account through the bundled Gecko engine. Native Chat is optional and uses an OpenAI API key.";
-    if (section == 1 && self.allWebRecents.count == 0) return @"Chats you start in ChatGPT Web will appear here automatically.";
+    if (section == 1 && self.allWebRecents.count == 0) return @"The first prompt you send in a web chat is saved locally here.";
     return nil;
 }
 
@@ -153,6 +147,13 @@ void CGOpenWebRecentURLString(NSString *urlString);
 
     if (ip.section == 1) {
         UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+        if (ip.row == self.webRecents.count && self.allWebRecents.count) {
+            cell.textLabel.text = @"Clear Recents";
+            cell.textLabel.textColor = UIColor.systemRedColor;
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            return cell;
+        }
+
         NSDictionary *item = self.webRecents[ip.row];
         NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"Recent chat";
         cell.textLabel.text = title.length ? title : @"Recent chat";
@@ -229,6 +230,19 @@ void CGOpenWebRecentURLString(NSString *urlString);
     }];
 }
 
+- (void)confirmClearRecents {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear Recents?"
+                                                                   message:@"This only clears the locally saved Recents list in this app. It does not delete conversations from your ChatGPT account."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        CGClearWebRecents();
+        [weakSelf reloadWebRecents];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tableView deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 0) {
@@ -238,7 +252,8 @@ void CGOpenWebRecentURLString(NSString *urlString);
         return;
     }
     if (ip.section == 1) {
-        [self openRecentAtIndex:ip.row];
+        if (ip.row == self.webRecents.count && self.allWebRecents.count) [self confirmClearRecents];
+        else [self openRecentAtIndex:ip.row];
         return;
     }
     if (ip.row < CGStore.shared.conversations.count) [self showNativeChat:CGStore.shared.conversations[ip.row]];

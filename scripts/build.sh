@@ -34,7 +34,7 @@ Package: com.551.chatgpt14
 Name: ChatGPT iOS 14
 Version: $VERSION
 Architecture: iphoneos-arm
-Description: Native ChatGPT-style client for rootful iOS 14 with streaming, images, files, tools, voice dictation and local chat history.
+Description: First-party ChatGPT web launcher for rootful iOS 14 using Reynard's Gecko engine. Uses your normal ChatGPT login and does not require an OpenAI API key.
 Maintainer: 551UK
 Author: 551UK
 Section: Applications

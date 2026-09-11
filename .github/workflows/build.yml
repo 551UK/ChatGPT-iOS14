@@ -1,4 +1,4 @@
-name: Build rootful iOS 14 app
+name: Build self-contained Gecko ChatGPT for iOS 14
 
 on:
   push:
@@ -13,19 +13,21 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install packaging tools
         run: |
           brew install dpkg
           brew install ldid || true
-      - name: Build rootful deb
+      - name: Build self-contained rootful deb
         run: ./scripts/build.sh
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGPT-iOS14-rootful
+          name: ChatGPT-iOS14-Gecko-rootful
           path: build/*.deb
+          compression-level: 0
       - name: Publish release
         if: github.event_name == 'push'
         env:
@@ -35,8 +37,9 @@ jobs:
           VERSION="$(cat VERSION | tr -d '[:space:]')"
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
+          NOTES="Self-contained rootful iOS 14 ChatGPT build. Gecko is bundled inside the package using Reynard 0.12.0, so Reynard does not need to be installed separately. Opens chatgpt.com by default and uses your normal ChatGPT account with no OpenAI API key."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
           else
-            gh release create "$TAG" "$DEB" --title "ChatGPT iOS 14 v$VERSION" --notes "Rootful iOS 14 ChatGPT launcher using Reynard Gecko for the first-party ChatGPT website. Normal ChatGPT login; no API key required."
+            gh release create "$TAG" "$DEB" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"
           fi

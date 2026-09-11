@@ -37,7 +37,7 @@ jobs:
           VERSION="$(cat VERSION | tr -d '[:space:]')"
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. v1.5.6 keeps local prompt-based Recents but now binds each Recent to Reynard's real persisted tab UUID and resolves the exact ChatGPT /c/... conversation URL from the tab database/session state, so tapping a Recent returns to the saved conversation instead of opening a fresh chat. Multiple messages in the same chat update one Recent instead of creating duplicates. Startup now reads the persisted Gecko tab database directly rather than relying on private Swift KVC, preventing an unnecessary extra hidden tab on normal launches. Clear Recents remains local-only; Native Chat remains selectable and keyboard-safe."
+          NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. v1.5.7 fixes Recents restoration without relying on ChatGPT exposing a /c/... URL. Each Recent is tied to the real persisted Gecko tab UUID, and tapping it now uses Reynard's own hidden tab-overview selection path to switch back to that exact Gecko tab/session. This restores the previous conversation itself, including after app relaunch when Reynard restores its saved tab state. Exact ChatGPT URLs are kept only as a fallback for older Recents whose original Gecko tab is gone. The old 'Chat still saving' loop is removed."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
             gh release edit "$TAG" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"

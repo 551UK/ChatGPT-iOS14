@@ -3,7 +3,6 @@
 #import <objc/runtime.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
-static NSString * const CGSeedKey = @"cg_gecko_web_seed_v15";
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
 static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
@@ -53,6 +52,7 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 @property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
 - (void)layoutShell;
@@ -117,21 +117,33 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 }
 
 - (void)seedWebChatIfNeeded {
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if ([defaults boolForKey:CGSeedKey]) return;
+    if (self.didSeedWebChat) return;
 
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (!button) {
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [weakSelf seedWebChatIfNeeded];
         });
         return;
     }
 
-    [button sendActionsForControlEvents:UIControlEventTouchUpInside];
-    [defaults setBool:YES forKey:CGSeedKey];
-    [defaults synchronize];
+    // Do this once per app launch, not once per install. The previous persistent
+    // flag could leave the Gecko content area empty on later launches until the
+    // user manually tapped the New Chat button.
+    self.didSeedWebChat = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        UIButton *readyButton = CGFindButtonForAction(self.root.view, @"newTabTapped");
+        if (!readyButton) {
+            self.didSeedWebChat = NO;
+            [self seedWebChatIfNeeded];
+            return;
+        }
+        [readyButton sendActionsForControlEvents:UIControlEventTouchUpInside];
+    });
 }
 
 - (void)layoutShell {

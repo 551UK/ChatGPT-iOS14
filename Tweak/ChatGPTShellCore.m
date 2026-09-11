@@ -8,6 +8,7 @@ static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
 
 extern void CGPresentUnifiedMenu(UIViewController *presenter, BOOL nativeMode, id nativeChatController);
+extern void CGCaptureWebRecentsFromRoot(UIViewController *root);
 
 UIViewController *CGCurrentWebRoot(void) {
     return CGWebRoot;
@@ -52,6 +53,7 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 @property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) NSTimer *recentsTimer;
 @property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -63,6 +65,10 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
 - (instancetype)initWithRoot:(UIViewController *)root {
     if ((self = [super init])) _root = root;
     return self;
+}
+
+- (void)dealloc {
+    [self.recentsTimer invalidate];
 }
 
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -104,14 +110,30 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     [self.root.view addSubview:header];
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
+
+    // Start the real ChatGPT page as soon as Reynard's hidden new-tab control
+    // exists. v1.5.1 waited another 450 ms after that point, which made the
+    // composer visibly lag behind the app shell.
     [self seedWebChatIfNeeded];
+
+    // ChatGPT is a single-page app. Capture the live Gecko tab repeatedly so a
+    // newly-created /c/... URL and the generated conversation title are saved as
+    // soon as either appears, rather than only when the menu is opened.
+    __weak typeof(self) weakSelf = self;
+    self.recentsTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || !self.root.view.window) return;
+        CGCaptureWebRecentsFromRoot(self.root);
+    }];
 }
 
 - (void)openMenu {
+    CGCaptureWebRecentsFromRoot(self.root);
     CGPresentUnifiedMenu(self.root, NO, nil);
 }
 
 - (void)newWebChat {
+    CGCaptureWebRecentsFromRoot(self.root);
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
@@ -122,18 +144,15 @@ static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (!button) {
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [weakSelf seedWebChatIfNeeded];
         });
         return;
     }
 
-    // Do this once per app launch, not once per install. The previous persistent
-    // flag could leave the Gecko content area empty on later launches until the
-    // user manually tapped the New Chat button.
     self.didSeedWebChat = YES;
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
         UIButton *readyButton = CGFindButtonForAction(self.root.view, @"newTabTapped");

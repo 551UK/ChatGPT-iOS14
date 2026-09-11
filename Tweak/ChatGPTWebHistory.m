@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 UIViewController *CGCurrentWebRoot(void);
 
@@ -217,8 +218,6 @@ static void CGTryInstallChildViewHooks(void) {
     method_setImplementation(delete, (IMP)CGHookedDeleteBackward);
     CGChildViewHooksInstalled = YES;
 
-    CGDraftMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 target:[NSBlockOperation blockOperationWithBlock:^{}] selector:@selector(main) userInfo:nil repeats:YES];
-    [CGDraftMonitorTimer invalidate];
     CGDraftMonitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
         CGDraftMonitorTick(timer);
     }];

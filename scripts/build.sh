@@ -150,10 +150,12 @@ CLANG="$(xcrun --sdk iphoneos --find clang)"
     -framework Speech \
     -framework AVFoundation \
     -framework WebKit \
+    -lsqlite3 \
     "$ROOT/Tweak/ChatGPTGeckoBootstrap.m" \
     "$ROOT/Tweak/NativeChatSupport.m" \
     "$ROOT/Tweak/ChatGPTShellCore.m" \
     "$ROOT/Tweak/ChatGPTShellMenu.m" \
+    "$ROOT/Tweak/ChatGPTWebHistory.m" \
     "$ROOT/Tweak/ChatGPTSettingsPatch.m" \
     -o "$TWEAK_DIR/ChatGPTShell.dylib"
 cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTShell.plist"
@@ -179,7 +181,7 @@ Package: com.551.chatgpt14
 Name: ChatGPT iOS 14
 Version: $VERSION
 Architecture: iphoneos-arm
-Description: ChatGPT-style client for rootful iOS 14. ChatGPT Web is the default and is rendered by a bundled Gecko engine with no browser chrome or API key. Optional Native Chat remains selectable from the menu.
+Description: ChatGPT-style client for rootful iOS 14. ChatGPT Web is the default and is rendered by a bundled Gecko engine with no browser chrome or API key. Includes searchable web conversation history and optional Native Chat.
 Maintainer: 551UK
 Author: 551UK
 Section: Applications

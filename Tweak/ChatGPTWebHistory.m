@@ -2,11 +2,13 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <sqlite3.h>
 
 UIViewController *CGCurrentWebRoot(void);
 
-static NSString * const CGRecentsDefaultsKey = @"CGWebRecentsV4";
-static NSString * const CGLegacyRecentsDefaultsKey = @"CGWebRecentsV3";
+static NSString * const CGRecentsDefaultsKey = @"CGWebRecentsV5";
+static NSString * const CGLegacyRecentsDefaultsKeyV4 = @"CGWebRecentsV4";
+static NSString * const CGLegacyRecentsDefaultsKeyV3 = @"CGWebRecentsV3";
 static NSUInteger const CGRecentsLimit = 120;
 
 static __weak id CGActiveEditable = nil;
@@ -16,6 +18,90 @@ static IMP CGOriginalInsertText = NULL;
 static IMP CGOriginalDeleteBackward = NULL;
 static BOOL CGChildViewHooksInstalled = NO;
 static NSInteger CGChildViewHookAttempts = 0;
+static BOOL CGResolverRunning = NO;
+
+#pragma mark - Reynard tab database
+
+static NSString *CGTabDatabasePath(void) {
+    NSString *support = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (!support.length) return nil;
+    return [support stringByAppendingPathComponent:@"AppData/TabManagement/TabManagement"];
+}
+
+static sqlite3 *CGOpenTabDatabase(void) {
+    NSString *path = CGTabDatabasePath();
+    if (!path.length || ![NSFileManager.defaultManager fileExistsAtPath:path]) return NULL;
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK || !db) {
+        if (db) sqlite3_close(db);
+        return NULL;
+    }
+    sqlite3_busy_timeout(db, 500);
+    return db;
+}
+
+static NSString *CGSQLiteString(sqlite3_stmt *stmt, int column) {
+    const unsigned char *text = sqlite3_column_text(stmt, column);
+    return text ? [NSString stringWithUTF8String:(const char *)text] : nil;
+}
+
+static NSDictionary *CGTabSnapshotForID(NSString *tabID) {
+    if (!tabID.length) return nil;
+    sqlite3 *db = CGOpenTabDatabase();
+    if (!db) return nil;
+
+    NSDictionary *result = nil;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT id, title, url, tab_session_state FROM tabs WHERE id = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, tabID.UTF8String, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            NSString *foundID = CGSQLiteString(stmt, 0) ?: tabID;
+            NSString *title = CGSQLiteString(stmt, 1) ?: @"";
+            NSString *url = CGSQLiteString(stmt, 2) ?: @"";
+            NSString *state = CGSQLiteString(stmt, 3) ?: @"";
+            result = @{ @"id": foundID, @"title": title, @"url": url, @"state": state };
+        }
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return result;
+}
+
+static NSDictionary *CGSelectedTabSnapshot(void) {
+    sqlite3 *db = CGOpenTabDatabase();
+    if (!db) return nil;
+
+    NSString *selectedID = nil;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT selected_regular_tab_id, selected_private_tab_id, selected_tab_mode FROM tab_state WHERE id = 1 LIMIT 1;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+        NSString *regularID = CGSQLiteString(stmt, 0);
+        NSString *privateID = CGSQLiteString(stmt, 1);
+        NSString *mode = CGSQLiteString(stmt, 2) ?: @"regular";
+        selectedID = [mode isEqualToString:@"private"] ? privateID : regularID;
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(db);
+
+    if (selectedID.length) return CGTabSnapshotForID(selectedID);
+
+    // First-run fallback while the state row is still being written.
+    db = CGOpenTabDatabase();
+    if (!db) return nil;
+    NSDictionary *result = nil;
+    stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT id, title, url, tab_session_state FROM tabs WHERE is_private = 0 ORDER BY position DESC LIMIT 1;", -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+        result = @{ @"id": CGSQLiteString(stmt, 0) ?: @"",
+                    @"title": CGSQLiteString(stmt, 1) ?: @"",
+                    @"url": CGSQLiteString(stmt, 2) ?: @"",
+                    @"state": CGSQLiteString(stmt, 3) ?: @"" };
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return result;
+}
 
 static BOOL CGIsChatGPTURLString(NSString *urlString) {
     NSURL *url = [NSURL URLWithString:urlString ?: @""];
@@ -32,24 +118,32 @@ static BOOL CGIsChatConversationURLString(NSString *urlString) {
            [path hasPrefix:@"/conversation/"] || [path containsString:@"/conversation/"];
 }
 
-static id CGSafeValueForKey(id object, NSString *key) {
-    if (!object || !key.length) return nil;
-    @try {
-        return [object valueForKey:key];
-    } @catch (__unused NSException *exception) {
-        return nil;
-    }
+static NSString *CGConversationURLFromSessionState(NSString *state) {
+    if (!state.length) return nil;
+    NSString *unescaped = [state stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"https?://(?:www\\.)?chatgpt\\.com/(?:c|conversation)/[A-Za-z0-9_-]+" options:NSRegularExpressionCaseInsensitive error:nil];
+    NSTextCheckingResult *match = [regex firstMatchInString:unescaped options:0 range:NSMakeRange(0, unescaped.length)];
+    if (!match || match.range.location == NSNotFound) return nil;
+    NSString *url = [unescaped substringWithRange:match.range];
+    return CGIsChatConversationURLString(url) ? url : nil;
 }
 
-static NSString *CGSelectedWebURL(UIViewController *root) {
-    if (!root) return nil;
-    id manager = CGSafeValueForKey(root, @"tabManager");
-    id selected = CGSafeValueForKey(manager, @"selectedTab");
-    id rawURL = CGSafeValueForKey(selected, @"url");
-    if ([rawURL isKindOfClass:NSString.class]) return rawURL;
-    if ([rawURL isKindOfClass:NSURL.class]) return [(NSURL *)rawURL absoluteString];
-    return nil;
+static NSString *CGResolvedConversationURL(NSDictionary *snapshot) {
+    if (![snapshot isKindOfClass:NSDictionary.class]) return nil;
+    NSString *url = [snapshot[@"url"] isKindOfClass:NSString.class] ? snapshot[@"url"] : nil;
+    if (CGIsChatConversationURLString(url)) return url;
+    NSString *state = [snapshot[@"state"] isKindOfClass:NSString.class] ? snapshot[@"state"] : nil;
+    return CGConversationURLFromSessionState(state);
 }
+
+NSString *CGStoredSelectedWebURL(void) {
+    NSDictionary *snapshot = CGSelectedTabSnapshot();
+    NSString *url = [snapshot[@"url"] isKindOfClass:NSString.class] ? snapshot[@"url"] : nil;
+    NSString *resolved = CGResolvedConversationURL(snapshot);
+    return resolved ?: url;
+}
+
+#pragma mark - Local Recents store
 
 static NSString *CGPromptTitle(NSString *prompt) {
     if (!prompt.length) return @"Recent chat";
@@ -75,11 +169,63 @@ static NSArray<NSDictionary *> *CGReadStoredRecents(void) {
 }
 
 static void CGWriteRecents(NSArray<NSDictionary *> *items) {
-    NSArray *limited = items;
+    NSArray *limited = items ?: @[];
     if (limited.count > CGRecentsLimit) limited = [limited subarrayWithRange:NSMakeRange(0, CGRecentsLimit)];
     [NSUserDefaults.standardUserDefaults setObject:limited forKey:CGRecentsDefaultsKey];
     [NSUserDefaults.standardUserDefaults synchronize];
 }
+
+static BOOL CGResolveStoredRecentsOnce(void) {
+    NSMutableArray<NSDictionary *> *items = [CGReadStoredRecents() mutableCopy];
+    BOOL changed = NO;
+    BOOL unresolved = NO;
+
+    for (NSUInteger i = 0; i < items.count; i++) {
+        NSDictionary *raw = items[i];
+        NSString *tabID = [raw[@"tab_id"] isKindOfClass:NSString.class] ? raw[@"tab_id"] : nil;
+        NSString *oldURL = [raw[@"url"] isKindOfClass:NSString.class] ? raw[@"url"] : nil;
+        if (!tabID.length || CGIsChatConversationURLString(oldURL)) continue;
+
+        NSDictionary *snapshot = CGTabSnapshotForID(tabID);
+        NSString *resolved = CGResolvedConversationURL(snapshot);
+        if (resolved.length) {
+            NSMutableDictionary *item = [raw mutableCopy];
+            item[@"url"] = resolved;
+            items[i] = item;
+            changed = YES;
+        } else if (snapshot) {
+            unresolved = YES;
+        }
+    }
+
+    if (changed) CGWriteRecents(items);
+    return unresolved;
+}
+
+static void CGRunResolverAttempt(NSUInteger attempt) {
+    if (attempt >= 50) {
+        CGResolverRunning = NO;
+        return;
+    }
+
+    BOOL unresolved = CGResolveStoredRecentsOnce();
+    if (!unresolved) {
+        CGResolverRunning = NO;
+        return;
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.40 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CGRunResolverAttempt(attempt + 1);
+    });
+}
+
+static void CGStartResolver(void) {
+    if (CGResolverRunning) return;
+    CGResolverRunning = YES;
+    CGRunResolverAttempt(0);
+}
+
+#pragma mark - Prompt capture
 
 static BOOL CGEditableLooksSensitive(id editable) {
     if (!editable) return YES;
@@ -113,8 +259,7 @@ static NSString *CGEditableText(id editable) {
     UITextRange *range = [input textRangeFromPosition:begin toPosition:end];
     if (!range) return nil;
     NSString *text = [input textInRange:range];
-    if (![text isKindOfClass:NSString.class]) return nil;
-    if (text.length > 8000) return nil;
+    if (![text isKindOfClass:NSString.class] || text.length > 8000) return nil;
     return text;
 }
 
@@ -122,21 +267,43 @@ static void CGSaveLocalPrompt(NSString *prompt) {
     NSString *title = CGPromptTitle(prompt);
     if (!title.length || [title isEqualToString:@"Recent chat"]) return;
 
-    NSString *selectedURL = CGSelectedWebURL(CGCurrentWebRoot());
-    NSString *storedURL = CGIsChatGPTURLString(selectedURL) ? selectedURL : @"https://chatgpt.com/";
+    NSDictionary *snapshot = CGSelectedTabSnapshot();
+    NSString *tabID = [snapshot[@"id"] isKindOfClass:NSString.class] ? snapshot[@"id"] : nil;
+    NSString *selectedURL = [snapshot[@"url"] isKindOfClass:NSString.class] ? snapshot[@"url"] : nil;
+    NSString *resolvedURL = CGResolvedConversationURL(snapshot);
+    NSString *storedURL = resolvedURL ?: (CGIsChatGPTURLString(selectedURL) ? selectedURL : @"https://chatgpt.com/");
     NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-    NSString *identifier = [NSString stringWithFormat:@"local:%.3f:%@", now, NSUUID.UUID.UUIDString];
 
     NSMutableArray<NSDictionary *> *items = [CGReadStoredRecents() mutableCopy];
-    NSDictionary *record = @{
-        @"id": identifier,
-        @"url": storedURL,
-        @"title": title,
-        @"date": @(now),
-        @"local": @YES
-    };
-    [items insertObject:record atIndex:0];
+    NSUInteger existingIndex = NSNotFound;
+    if (tabID.length) {
+        existingIndex = [items indexOfObjectPassingTest:^BOOL(NSDictionary *item, NSUInteger idx, BOOL *stop) {
+            NSString *existingTabID = [item[@"tab_id"] isKindOfClass:NSString.class] ? item[@"tab_id"] : nil;
+            return [existingTabID isEqualToString:tabID];
+        }];
+    }
+
+    if (existingIndex != NSNotFound) {
+        NSMutableDictionary *existing = [items[existingIndex] mutableCopy];
+        existing[@"date"] = @(now);
+        if (resolvedURL.length) existing[@"url"] = resolvedURL;
+        [items removeObjectAtIndex:existingIndex];
+        [items insertObject:existing atIndex:0];
+    } else {
+        NSString *identifier = tabID.length ? [@"tab:" stringByAppendingString:tabID] : [NSString stringWithFormat:@"local:%.3f:%@", now, NSUUID.UUID.UUIDString];
+        NSMutableDictionary *record = [@{
+            @"id": identifier,
+            @"url": storedURL,
+            @"title": title,
+            @"date": @(now),
+            @"local": @YES
+        } mutableCopy];
+        if (tabID.length) record[@"tab_id"] = tabID;
+        [items insertObject:record atIndex:0];
+    }
+
     CGWriteRecents(items);
+    if (!resolvedURL.length && tabID.length) CGStartResolver();
 }
 
 static void CGUpdateDraftFromEditable(id editable) {
@@ -144,7 +311,7 @@ static void CGUpdateDraftFromEditable(id editable) {
     NSString *text = CGEditableText(editable);
     if (text == nil) return;
 
-    NSString *selectedURL = CGSelectedWebURL(CGCurrentWebRoot());
+    NSString *selectedURL = CGStoredSelectedWebURL();
     if (selectedURL.length && !CGIsChatGPTURLString(selectedURL)) return;
 
     NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -160,7 +327,7 @@ static void CGDraftMonitorTick(__unused NSTimer *timer) {
     NSString *current = CGEditableText(editable);
     if (current == nil) return;
 
-    NSString *selectedURL = CGSelectedWebURL(CGCurrentWebRoot());
+    NSString *selectedURL = CGStoredSelectedWebURL();
     if (selectedURL.length && !CGIsChatGPTURLString(selectedURL)) {
         CGCurrentDraft = nil;
         CGActiveEditable = nil;
@@ -173,9 +340,9 @@ static void CGDraftMonitorTick(__unused NSTimer *timer) {
         return;
     }
 
-    // ChatGPT clears its composer locally as soon as a prompt is submitted.
-    // Save that text immediately; this no longer depends on Gecko history or
-    // ChatGPT having generated a /c/... URL/title yet.
+    // ChatGPT clears the composer immediately after submission. Save the first
+    // prompt against Reynard's actual tab UUID, then resolve that tab's SPA URL
+    // to the final /c/... conversation link in the background.
     NSString *submitted = CGCurrentDraft;
     CGCurrentDraft = nil;
     CGActiveEditable = nil;
@@ -184,16 +351,12 @@ static void CGDraftMonitorTick(__unused NSTimer *timer) {
 
 static void CGHookedInsertText(id self, SEL _cmd, NSString *text) {
     if (CGOriginalInsertText) ((void (*)(id, SEL, NSString *))CGOriginalInsertText)(self, _cmd, text);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGUpdateDraftFromEditable(self);
-    });
+    dispatch_async(dispatch_get_main_queue(), ^{ CGUpdateDraftFromEditable(self); });
 }
 
 static void CGHookedDeleteBackward(id self, SEL _cmd) {
     if (CGOriginalDeleteBackward) ((void (*)(id, SEL))CGOriginalDeleteBackward)(self, _cmd);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        CGUpdateDraftFromEditable(self);
-    });
+    dispatch_async(dispatch_get_main_queue(), ^{ CGUpdateDraftFromEditable(self); });
 }
 
 static void CGTryInstallChildViewHooks(void) {
@@ -201,9 +364,7 @@ static void CGTryInstallChildViewHooks(void) {
     Class childView = objc_getClass("ChildView");
     if (!childView) {
         if (++CGChildViewHookAttempts < 100) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                CGTryInstallChildViewHooks();
-            });
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ CGTryInstallChildViewHooks(); });
         }
         return;
     }
@@ -228,55 +389,28 @@ void CGResetLocalPromptCapture(void) {
     CGActiveEditable = nil;
 }
 
-void CGCaptureWebRecentsFromRoot(UIViewController *root) {
-    if (!root) return;
-    NSString *selectedURL = CGSelectedWebURL(root);
-    if (!CGIsChatConversationURLString(selectedURL)) return;
-
-    // Attach the real conversation URL to the newest locally-captured prompt.
-    // This is best-effort only; the prompt itself is already saved even if
-    // ChatGPT/Reynard never exposes the SPA URL to Objective-C.
-    NSMutableArray<NSDictionary *> *items = [CGReadStoredRecents() mutableCopy];
-    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-    for (NSUInteger i = 0; i < items.count; i++) {
-        NSMutableDictionary *item = [items[i] mutableCopy];
-        NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : @"";
-        NSTimeInterval date = [item[@"date"] doubleValue];
-        if (![item[@"local"] boolValue]) continue;
-        if (CGIsChatConversationURLString(url)) continue;
-        if (now - date > 180.0) break;
-        item[@"url"] = selectedURL;
-        items[i] = item;
-        CGWriteRecents(items);
-        break;
-    }
+void CGCaptureWebRecentsFromRoot(__unused UIViewController *root) {
+    CGResolveStoredRecentsOnce();
 }
 
 void CGCaptureWebRecents(void) {
-    CGCaptureWebRecentsFromRoot(CGCurrentWebRoot());
+    CGResolveStoredRecentsOnce();
 }
 
 NSArray<NSDictionary *> *CGWebRecentItems(void) {
-    CGCaptureWebRecents();
+    CGResolveStoredRecentsOnce();
     return CGReadStoredRecents();
 }
 
 void CGClearWebRecents(void) {
     [NSUserDefaults.standardUserDefaults removeObjectForKey:CGRecentsDefaultsKey];
-    [NSUserDefaults.standardUserDefaults removeObjectForKey:CGLegacyRecentsDefaultsKey];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:CGLegacyRecentsDefaultsKeyV4];
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:CGLegacyRecentsDefaultsKeyV3];
     [NSUserDefaults.standardUserDefaults synchronize];
     CGResetLocalPromptCapture();
 }
 
-void CGDeleteWebRecentURLString(NSString *urlString) {
-    if (!urlString.length) return;
-    NSMutableArray *items = [CGReadStoredRecents() mutableCopy];
-    NSIndexSet *indexes = [items indexesOfObjectsPassingTest:^BOOL(NSDictionary *item, NSUInteger idx, BOOL *stop) {
-        return [item[@"url"] isEqualToString:urlString];
-    }];
-    if (indexes.count) [items removeObjectsAtIndexes:indexes];
-    CGWriteRecents(items);
-}
+#pragma mark - Opening a saved conversation
 
 static UIButton *CGFindNewTabButton(UIView *root) {
     if (!root) return nil;
@@ -295,14 +429,13 @@ static UIButton *CGFindNewTabButton(UIView *root) {
     return nil;
 }
 
-void CGOpenWebRecentURLString(NSString *urlString) {
+static void CGOpenExactWebURL(NSString *urlString) {
     UIViewController *root = CGCurrentWebRoot();
-    if (!root) return;
+    if (!root || !CGIsChatConversationURLString(urlString)) return;
 
-    NSString *target = CGIsChatGPTURLString(urlString) ? urlString : @"https://chatgpt.com/";
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
-    [defaults setObject:target forKey:@"default.NewTabSettings.customNewTabURL"];
+    [defaults setObject:urlString forKey:@"default.NewTabSettings.customNewTabURL"];
     [defaults synchronize];
 
     UIButton *button = CGFindNewTabButton(root.view);
@@ -315,12 +448,39 @@ void CGOpenWebRecentURLString(NSString *urlString) {
     });
 }
 
+BOOL CGOpenWebRecentItem(NSDictionary *item) {
+    if (![item isKindOfClass:NSDictionary.class]) return NO;
+
+    NSString *tabID = [item[@"tab_id"] isKindOfClass:NSString.class] ? item[@"tab_id"] : nil;
+    NSString *targetURL = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : nil;
+
+    if (tabID.length) {
+        NSDictionary *snapshot = CGTabSnapshotForID(tabID);
+        NSString *resolved = CGResolvedConversationURL(snapshot);
+        if (resolved.length) targetURL = resolved;
+
+        NSDictionary *selected = CGSelectedTabSnapshot();
+        NSString *selectedID = [selected[@"id"] isKindOfClass:NSString.class] ? selected[@"id"] : nil;
+        if (selectedID.length && [selectedID isEqualToString:tabID]) {
+            // That exact Gecko tab is already selected, so simply dismissing the
+            // Recents sheet returns to the original live conversation.
+            return YES;
+        }
+    }
+
+    if (!CGIsChatConversationURLString(targetURL)) return NO;
+    CGOpenExactWebURL(targetURL);
+    return YES;
+}
+
+void CGOpenWebRecentURLString(NSString *urlString) {
+    if (CGIsChatConversationURLString(urlString)) CGOpenExactWebURL(urlString);
+}
+
 __attribute__((constructor))
 static void CGInstallLocalPromptCapture(void) {
     @autoreleasepool {
         if (![[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.551.chatgpt14"]) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            CGTryInstallChildViewHooks();
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ CGTryInstallChildViewHooks(); });
     }
 }

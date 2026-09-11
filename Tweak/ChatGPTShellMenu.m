@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 
 UIViewController *CGCurrentWebRoot(void);
+void CGPushWebHistory(UINavigationController *navigationController, BOOL nativeMode, UIViewController *webRoot);
 
 @class CGConversation;
 @interface CGStore : NSObject
@@ -53,7 +54,7 @@ UIViewController *CGCurrentWebRoot(void);
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 3 : CGStore.shared.conversations.count;
+    return section == 0 ? 4 : CGStore.shared.conversations.count;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -61,21 +62,24 @@ UIViewController *CGCurrentWebRoot(void);
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"ChatGPT Web is the default and uses the bundled Gecko engine with your normal ChatGPT account. Native Chat is optional and uses an OpenAI API key.";
+    if (section == 0) return @"ChatGPT Web is the default and uses the bundled Gecko engine with your normal ChatGPT account. History shows web conversations opened in this app. Native Chat is optional and uses an OpenAI API key.";
     return nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)ip {
     UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
     if (ip.section == 0) {
-        NSArray *names = @[@"ChatGPT Web", @"Native Chat", @"Settings"];
-        NSArray *icons = @[@"globe", @"message", @"gearshape"];
+        NSArray *names = @[@"ChatGPT Web", @"History", @"Native Chat", @"Settings"];
+        NSArray *icons = @[@"globe", @"clock.arrow.circlepath", @"message", @"gearshape"];
         cell.textLabel.text = names[ip.row];
         cell.imageView.image = [UIImage systemImageNamed:icons[ip.row]];
         if (ip.row == 0) {
             cell.detailTextLabel.text = @"Normal ChatGPT account • Gecko";
             cell.accessoryType = self.nativeMode ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryCheckmark;
         } else if (ip.row == 1) {
+            cell.detailTextLabel.text = @"Web conversation history";
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (ip.row == 2) {
             cell.detailTextLabel.text = @"Optional API chat";
             cell.accessoryType = self.nativeMode ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryDisclosureIndicator;
         } else {
@@ -125,6 +129,10 @@ UIViewController *CGCurrentWebRoot(void);
     }];
 }
 
+- (void)showHistory {
+    CGPushWebHistory(self.navigationController, self.nativeMode, self.webRoot ?: CGCurrentWebRoot());
+}
+
 - (void)showSettings {
     CGSettingsViewController *settings = [CGSettingsViewController new];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:settings];
@@ -135,7 +143,8 @@ UIViewController *CGCurrentWebRoot(void);
     [tableView deselectRowAtIndexPath:ip animated:YES];
     if (ip.section == 0) {
         if (ip.row == 0) [self showWebChat];
-        else if (ip.row == 1) [self showNativeChat:nil];
+        else if (ip.row == 1) [self showHistory];
+        else if (ip.row == 2) [self showNativeChat:nil];
         else [self showSettings];
         return;
     }

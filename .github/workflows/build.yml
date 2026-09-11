@@ -3,6 +3,8 @@ name: Build rootful iOS 14 app
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:

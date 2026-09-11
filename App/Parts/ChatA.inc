@@ -49,6 +49,7 @@
 @property (nonatomic, strong) UITextView *input;
 @property (nonatomic, strong) UIButton *plusButton;
 @property (nonatomic, strong) UIButton *micButton;
+@property (nonatomic, strong) UIButton *voiceButton;
 @property (nonatomic, strong) UIButton *sendButton;
 @property (nonatomic, strong) UILabel *attachmentLabel;
 @property (nonatomic, strong) NSMutableArray<CGAttachment *> *pendingAttachments;
@@ -72,8 +73,11 @@
 
     self.composer = [UIView new]; self.composer.translatesAutoresizingMaskIntoConstraints = NO; self.composer.backgroundColor = UIColor.systemBackgroundColor; [self.view addSubview:self.composer];
     UIView *box = [UIView new]; box.translatesAutoresizingMaskIntoConstraints = NO; box.backgroundColor = UIColor.secondarySystemBackgroundColor; box.layer.cornerRadius = 22; box.layer.cornerCurve = kCACornerCurveContinuous; [self.composer addSubview:box];
-    self.plusButton = [self button:@"plus" action:@selector(attachTapped)]; self.micButton = [self button:@"waveform" action:@selector(micTapped)]; self.sendButton = [self button:@"arrow.up.circle.fill" action:@selector(sendTapped)];
-    [box addSubview:self.plusButton]; [box addSubview:self.micButton]; [box addSubview:self.sendButton];
+    self.plusButton = [self button:@"plus" action:@selector(attachTapped)];
+    self.micButton = [self button:@"mic" action:@selector(micTapped)];
+    self.voiceButton = [self button:@"waveform.circle.fill" action:@selector(voiceTapped)];
+    self.sendButton = [self button:@"arrow.up.circle.fill" action:@selector(sendTapped)];
+    [box addSubview:self.plusButton]; [box addSubview:self.micButton]; [box addSubview:self.voiceButton]; [box addSubview:self.sendButton];
     self.input = [UITextView new]; self.input.translatesAutoresizingMaskIntoConstraints = NO; self.input.backgroundColor = UIColor.clearColor; self.input.font = [UIFont systemFontOfSize:16]; self.input.delegate = self; self.input.scrollEnabled = YES; self.input.textContainerInset = UIEdgeInsetsMake(9, 2, 8, 2); [box addSubview:self.input];
     self.attachmentLabel = [UILabel new]; self.attachmentLabel.translatesAutoresizingMaskIntoConstraints = NO; self.attachmentLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium]; self.attachmentLabel.textColor = UIColor.secondaryLabelColor; self.attachmentLabel.numberOfLines = 2; self.attachmentLabel.hidden = YES; [self.composer addSubview:self.attachmentLabel];
 
@@ -85,7 +89,8 @@
         [box.topAnchor constraintEqualToAnchor:self.attachmentLabel.bottomAnchor constant:4], [box.leadingAnchor constraintEqualToAnchor:self.composer.leadingAnchor constant:10], [box.trailingAnchor constraintEqualToAnchor:self.composer.trailingAnchor constant:-10], [box.bottomAnchor constraintEqualToAnchor:self.composer.bottomAnchor constant:-7], [box.heightAnchor constraintGreaterThanOrEqualToConstant:46],
         [self.plusButton.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:5], [self.plusButton.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-4], [self.plusButton.widthAnchor constraintEqualToConstant:38], [self.plusButton.heightAnchor constraintEqualToConstant:38],
         [self.sendButton.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-5], [self.sendButton.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-4], [self.sendButton.widthAnchor constraintEqualToConstant:38], [self.sendButton.heightAnchor constraintEqualToConstant:38],
-        [self.micButton.trailingAnchor constraintEqualToAnchor:self.sendButton.leadingAnchor constant:-1], [self.micButton.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-4], [self.micButton.widthAnchor constraintEqualToConstant:34], [self.micButton.heightAnchor constraintEqualToConstant:38],
+        [self.voiceButton.trailingAnchor constraintEqualToAnchor:self.sendButton.leadingAnchor constant:-1], [self.voiceButton.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-4], [self.voiceButton.widthAnchor constraintEqualToConstant:34], [self.voiceButton.heightAnchor constraintEqualToConstant:38],
+        [self.micButton.trailingAnchor constraintEqualToAnchor:self.voiceButton.leadingAnchor constant:-1], [self.micButton.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-4], [self.micButton.widthAnchor constraintEqualToConstant:34], [self.micButton.heightAnchor constraintEqualToConstant:38],
         [self.input.leadingAnchor constraintEqualToAnchor:self.plusButton.trailingAnchor constant:2], [self.input.trailingAnchor constraintEqualToAnchor:self.micButton.leadingAnchor constant:-2], [self.input.topAnchor constraintEqualToAnchor:box.topAnchor constant:2], [self.input.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-2], [self.input.heightAnchor constraintLessThanOrEqualToConstant:125]
     ]];
     [self reloadConversation];

@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
+#include "ChatGPTTabRestore.m"
+
 UIViewController *CGCurrentWebRoot(void);
 void CGCaptureWebRecents(void);
 NSArray<NSDictionary *> *CGWebRecentItems(void);
@@ -210,9 +212,9 @@ void CGClearWebRecents(void);
     [self presentViewController:nav animated:YES completion:nil];
 }
 
-- (void)showRecentNotReadyAlert {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chat still saving"
-                                                                   message:@"This Recent was saved before ChatGPT's exact conversation link was available. Wait a moment and try it again."
+- (void)showRecentUnavailableAlert {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chat unavailable"
+                                                                   message:@"The Gecko tab for this Recent is no longer available and ChatGPT did not expose a reusable conversation link for it."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -222,11 +224,15 @@ void CGClearWebRecents(void);
     if (index >= self.webRecents.count) return;
     NSDictionary *item = self.webRecents[index];
 
-    // Resolve the tab UUID to the real ChatGPT /c/... URL before dismissing the
-    // menu. If the exact live Gecko tab is still selected this simply returns to
-    // it; otherwise a new Gecko tab opens the saved conversation URL.
-    if (!CGOpenWebRecentItem(item)) {
-        [self showRecentNotReadyAlert];
+    // Preferred path: reopen the exact persisted Gecko tab. This restores the
+    // actual live/restored GeckoSession and therefore the complete conversation;
+    // it does not depend on ChatGPT exposing a /c/... URL to the browser shell.
+    BOOL restoringSavedTab = CGRestoreWebRecentTab(item);
+
+    // Fallback for an old Recent whose original Gecko tab has gone away but for
+    // which we did manage to save an exact ChatGPT conversation URL.
+    if (!restoringSavedTab && !CGOpenWebRecentItem(item)) {
+        [self showRecentUnavailableAlert];
         return;
     }
 

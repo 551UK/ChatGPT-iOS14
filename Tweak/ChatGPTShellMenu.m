@@ -5,7 +5,7 @@
 UIViewController *CGCurrentWebRoot(void);
 void CGCaptureWebRecents(void);
 NSArray<NSDictionary *> *CGWebRecentItems(void);
-void CGOpenWebRecentURLString(NSString *urlString);
+BOOL CGOpenWebRecentItem(NSDictionary *item);
 void CGClearWebRecents(void);
 
 @class CGConversation;
@@ -210,22 +210,32 @@ void CGClearWebRecents(void);
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+- (void)showRecentNotReadyAlert {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chat still saving"
+                                                                   message:@"This Recent was saved before ChatGPT's exact conversation link was available. Wait a moment and try it again."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)openRecentAtIndex:(NSUInteger)index {
     if (index >= self.webRecents.count) return;
     NSDictionary *item = self.webRecents[index];
-    NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : nil;
-    if (!url.length) return;
 
-    UIViewController *web = self.webRoot ?: CGCurrentWebRoot();
+    // Resolve the tab UUID to the real ChatGPT /c/... URL before dismissing the
+    // menu. If the exact live Gecko tab is still selected this simply returns to
+    // it; otherwise a new Gecko tab opens the saved conversation URL.
+    if (!CGOpenWebRecentItem(item)) {
+        [self showRecentNotReadyAlert];
+        return;
+    }
+
     BOOL nativeMode = self.nativeMode;
+    UIViewController *web = self.webRoot ?: CGCurrentWebRoot();
     UINavigationController *menuNav = self.navigationController;
     [menuNav dismissViewControllerAnimated:YES completion:^{
         if (nativeMode && web.presentedViewController) {
-            [web dismissViewControllerAnimated:YES completion:^{
-                CGOpenWebRecentURLString(url);
-            }];
-        } else {
-            CGOpenWebRecentURLString(url);
+            [web dismissViewControllerAnimated:YES completion:nil];
         }
     }];
 }

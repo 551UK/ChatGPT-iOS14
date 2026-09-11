@@ -40,6 +40,7 @@ jobs:
           NOTES="Rootful iOS 14 ChatGPT client with a ChatGPT-style interface. v1.5.6 keeps local prompt-based Recents but now binds each Recent to Reynard's real persisted tab UUID and resolves the exact ChatGPT /c/... conversation URL from the tab database/session state, so tapping a Recent returns to the saved conversation instead of opening a fresh chat. Multiple messages in the same chat update one Recent instead of creating duplicates. Startup now reads the persisted Gecko tab database directly rather than relying on private Swift KVC, preventing an unnecessary extra hidden tab on normal launches. Clear Recents remains local-only; Native Chat remains selectable and keyboard-safe."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
+            gh release edit "$TAG" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"
           else
             gh release create "$TAG" "$DEB" --title "ChatGPT iOS 14 v$VERSION" --notes "$NOTES"
           fi

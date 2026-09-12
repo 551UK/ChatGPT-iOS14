@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 
 static NSString * const CGChatGPTBundleID = @"com.551.chatgpt14";
-static NSString * const CGChatGPTURL = @"https://chatgpt.com/?q=%E2%80%8C";
+static NSString * const CGChatGPTURL = @"https://chatgpt.com/?q=%E3%85%A4";
 static NSString * const CGChatGPTMobileUA = @"Mozilla/5.0 (Android 15; Mobile; rv:155.0) Gecko/155.0 Firefox/155.0";
 
 static void CGConfigureChatGPTDefaults(void) {
@@ -12,9 +12,9 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
     // Keep the stable phone layout and mobile Firefox identity. New chats are
-    // prefilled with an invisible zero-width non-joiner through the URL above.
-    // ChatGPT then treats the composer as non-empty and exposes the real mic
-    // immediately, without the user having to type a visible character first.
+    // prefilled with Hangul Filler (U+3164). It renders blank, but unlike the
+    // previous zero-width formatting character it is classified as a letter,
+    // so ChatGPT is much less likely to trim it from an otherwise empty composer.
     [defaults setBool:NO forKey:@"default.BrowsingSettings.requestDesktopWebsite"];
     [defaults setInteger:100 forKey:@"default.BrowsingSettings.defaultPageZoomLevel"];
 

@@ -3,7 +3,10 @@
 #import <objc/runtime.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
-static NSString * const CGComposerMicSeed = @"\u2060"; // WORD JOINER: zero-width, but a real input character.
+// U+2800 BRAILLE PATTERN BLANK renders as a blank cell, but unlike zero-width
+// format controls it is a real Unicode symbol (not whitespace/control text).
+// That makes ProseMirror/React much less likely to normalize it away.
+static NSString * const CGComposerMicSeed = @"\u2800";
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
 static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
@@ -219,10 +222,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 
     [self seedWebChatIfNeeded];
 
-    // ChatGPT's guest composer on this old Gecko build does not expose the
-    // dictation mic until it has received a real text-input event. Poll for a
-    // genuinely empty ChatGPT composer and seed it through Gecko's UIKeyInput
-    // path, rather than faking a query parameter in the URL.
+    // The guest composer does not expose dictation until it has received a real
+    // text-input event. Poll for an empty composer and seed a visually blank,
+    // non-whitespace Unicode symbol through Gecko's UIKeyInput path.
     self.composerAssistTimer = [NSTimer timerWithTimeInterval:1.25
                                                        target:self
                                                      selector:@selector(maintainEmptyComposerMic)
@@ -261,8 +263,8 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [input insertText:CGComposerMicSeed];
 
     // Drop focus immediately so the keyboard should not remain on screen. The
-    // zero-width character stays in the web composer and keeps React in the same
-    // state produced by typing a normal digit, making ChatGPT's real mic visible.
+    // blank symbol stays in the web composer so React sees the same non-empty
+    // state produced by typing a normal character and exposes the real mic.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.015 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [firstResponder resignFirstResponder];
     });

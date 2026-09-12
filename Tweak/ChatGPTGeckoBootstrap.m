@@ -3,7 +3,7 @@
 
 static NSString * const CGChatGPTBundleID = @"com.551.chatgpt14";
 static NSString * const CGChatGPTURL = @"https://chatgpt.com/";
-static const NSInteger CGChatGPTPhoneZoom = 150;
+static const NSInteger CGChatGPTPhoneZoom = 125;
 
 static void CGConfigureChatGPTDefaults(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -12,11 +12,11 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
     // Keep ChatGPT in the desktop-capable Gecko mode that exposes the real web
-    // Voice controls, but use a less aggressive permanent zoom. 175% made the
-    // composer too narrow on iPhone, which caused ChatGPT's mic to reflow/hide
-    // and pushed the Voice cancel/confirm controls outside the usable width.
-    // 150% keeps the page clearly larger while leaving enough horizontal room
-    // for the normal mic/send buttons and the full X / tick Voice bar.
+    // Voice controls, but leave enough horizontal room for the complete composer.
+    // 150% still made the mic disappear until the composer changed state and could
+    // push the Voice confirm button off-screen. 125% keeps the page larger than
+    // the normal desktop view while allowing the mic, send, X and tick controls
+    // to fit together on an iPhone-width display.
     [defaults setBool:YES forKey:@"default.BrowsingSettings.requestDesktopWebsite"];
     [defaults setInteger:CGChatGPTPhoneZoom forKey:@"default.BrowsingSettings.defaultPageZoomLevel"];
 

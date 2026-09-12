@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 
 static NSString * const CGChatGPTBundleID = @"com.551.chatgpt14";
-static NSString * const CGChatGPTURL = @"https://chatgpt.com/";
+static NSString * const CGChatGPTURL = @"https://chatgpt.com/?q=%E2%80%8C";
 static NSString * const CGChatGPTMobileUA = @"Mozilla/5.0 (Android 15; Mobile; rv:155.0) Gecko/155.0 Firefox/155.0";
 
 static void CGConfigureChatGPTDefaults(void) {
@@ -11,12 +11,10 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
-    // Keep the stable phone-sized layout from v1.5.13, but identify the Gecko
-    // session as a real mobile Firefox browser too. The previous hybrid used a
-    // desktop Firefox UA with a mobile viewport, which made ChatGPT choose a
-    // desktop composer state: on an empty guest composer the dictation slot was
-    // blank until any text was entered. Matching the mobile viewport and UA lets
-    // ChatGPT choose its proper mobile composer without the old zoom hacks.
+    // Keep the stable phone layout and mobile Firefox identity. New chats are
+    // prefilled with an invisible zero-width non-joiner through the URL above.
+    // ChatGPT then treats the composer as non-empty and exposes the real mic
+    // immediately, without the user having to type a visible character first.
     [defaults setBool:NO forKey:@"default.BrowsingSettings.requestDesktopWebsite"];
     [defaults setInteger:100 forKey:@"default.BrowsingSettings.defaultPageZoomLevel"];
 
@@ -27,9 +25,6 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:@"Linux armv81" forKey:@"default.CompatibilitySettings.customOscpu"];
     [defaults setObject:@"" forKey:@"default.CompatibilitySettings.customBuildID"];
 
-    // Reuse the last ChatGPT tab on later launches instead of creating a new
-    // hidden Gecko tab every single time. This keeps ChatGPT cookies and the
-    // guest/account web session in the same Gecko profile.
     [defaults setObject:@"lastTab" forKey:@"default.HomepageSettings.openingScreen"];
 
     [defaults setBool:NO forKey:@"default.HomepageSettings.showsRecommendations"];
@@ -47,8 +42,6 @@ static void ChatGPTGeckoBootstrapInit(void) {
             return;
         }
 
-        // Only the separate ChatGPT app gets these defaults. A normal Reynard
-        // installation is deliberately left completely untouched.
         CGConfigureChatGPTDefaults();
     }
 }

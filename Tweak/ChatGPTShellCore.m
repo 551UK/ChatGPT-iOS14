@@ -3,12 +3,6 @@
 #import <objc/runtime.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
-static NSString * const CGChatGPTWebURL = @"https://chatgpt.com/";
-static NSString * const CGChatGPTVoiceURL = @"https://chatgpt.com/?mode=voice";
-static NSString * const CGCustomNewTabURLKey = @"default.NewTabSettings.customNewTabURL";
-static NSString * const CGRequestDesktopWebsiteKey = @"default.BrowsingSettings.requestDesktopWebsite";
-static NSString * const CGDefaultPageZoomKey = @"default.BrowsingSettings.defaultPageZoomLevel";
-static const NSInteger CGVoicePhoneZoom = 175;
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
 static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
@@ -65,7 +59,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, weak) UIViewController *root;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) UIButton *menuButton;
-@property (nonatomic, strong) UIButton *voiceButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, assign) BOOL didSeedWebChat;
@@ -105,10 +98,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     self.menuButton.accessibilityLabel = @"ChatGPT menu";
     [header addSubview:self.menuButton];
 
-    self.voiceButton = [self buttonWithSymbol:@"mic.fill" action:@selector(openWebVoice)];
-    self.voiceButton.accessibilityLabel = @"ChatGPT Voice";
-    [header addSubview:self.voiceButton];
-
     self.composeButton = [self buttonWithSymbol:@"square.and.pencil" action:@selector(newWebChat)];
     self.composeButton.accessibilityLabel = @"New chat";
     [header addSubview:self.composeButton];
@@ -125,6 +114,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
 
+    // Read Reynard's persisted selected-tab URL directly from its own SQLite
+    // store. The previous KVC lookup could not see Swift's private Tab object,
+    // so it wrongly created another hidden tab on every launch.
     [self seedWebChatIfNeeded];
 }
 
@@ -138,54 +130,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     CGResetLocalPromptCapture();
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
-}
-
-- (void)openWebVoice {
-    CGCaptureWebRecentsFromRoot(self.root);
-    CGResetLocalPromptCapture();
-
-    UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
-    if (!button) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Voice is still loading"
-                                                                       message:@"Wait a moment for ChatGPT Web to finish loading, then tap the microphone again."
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [self.root presentViewController:alert animated:YES completion:nil];
-        return;
-    }
-
-    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    id previousURL = [defaults objectForKey:CGCustomNewTabURLKey];
-    id previousDesktopMode = [defaults objectForKey:CGRequestDesktopWebsiteKey];
-    id previousZoom = [defaults objectForKey:CGDefaultPageZoomKey];
-
-    // ChatGPT currently exposes its full web Voice UI to Reynard in desktop
-    // website mode. Keep that known-working mode, but create only the Voice tab
-    // at a much larger Gecko full-page zoom. Full zoom also gives responsive
-    // sites less CSS width, so ChatGPT lays itself out like a phone instead of a
-    // tiny desktop page with a permanent sidebar. The mic/send controls and the
-    // Voice cancel/confirm controls are enlarged together because they are part
-    // of the real ChatGPT page, not replacement buttons drawn by this app.
-    [defaults setObject:CGChatGPTVoiceURL forKey:CGCustomNewTabURLKey];
-    [defaults setBool:YES forKey:CGRequestDesktopWebsiteKey];
-    [defaults setInteger:CGVoicePhoneZoom forKey:CGDefaultPageZoomKey];
-    [defaults synchronize];
-
-    [button sendActionsForControlEvents:UIControlEventTouchUpInside];
-
-    // New-tab creation reads these settings synchronously. Restore the normal
-    // defaults afterwards so ordinary text tabs keep their existing layout.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (previousURL) [defaults setObject:previousURL forKey:CGCustomNewTabURLKey];
-        else [defaults setObject:CGChatGPTWebURL forKey:CGCustomNewTabURLKey];
-
-        if (previousDesktopMode) [defaults setObject:previousDesktopMode forKey:CGRequestDesktopWebsiteKey];
-        else [defaults removeObjectForKey:CGRequestDesktopWebsiteKey];
-
-        if (previousZoom) [defaults setObject:previousZoom forKey:CGDefaultPageZoomKey];
-        else [defaults removeObjectForKey:CGDefaultPageZoomKey];
-        [defaults synchronize];
-    });
 }
 
 - (void)seedWebChatIfNeeded {
@@ -206,6 +150,8 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
         return;
     }
 
+    // On the very first launch there is no persisted ChatGPT tab yet, so create
+    // one immediately. Later launches reuse the stored Gecko tab instead.
     self.didSeedWebChat = YES;
     [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
@@ -241,9 +187,8 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     CGFloat headerHeight = 44.0;
     self.header.frame = CGRectMake(0, safe.top, width, headerHeight);
     self.menuButton.frame = CGRectMake(7, 2, 44, 40);
-    self.voiceButton.frame = CGRectMake(width - 95, 2, 44, 40);
     self.composeButton.frame = CGRectMake(width - 51, 2, 44, 40);
-    self.titleLabel.frame = CGRectMake(58, 0, MAX(0, width - 160), headerHeight);
+    self.titleLabel.frame = CGRectMake(58, 0, MAX(0, width - 116), headerHeight);
 
     if (content) {
         CGFloat top = safe.top + headerHeight;

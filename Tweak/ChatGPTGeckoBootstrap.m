@@ -3,6 +3,7 @@
 
 static NSString * const CGChatGPTBundleID = @"com.551.chatgpt14";
 static NSString * const CGChatGPTURL = @"https://chatgpt.com/";
+static const NSInteger CGChatGPTPhoneZoom = 175;
 
 static void CGConfigureChatGPTDefaults(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -10,9 +11,16 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
+    // Keep ChatGPT in the same desktop-capable Gecko mode that exposes the real
+    // web Voice controls, but make the zoom permanent instead of changing it for
+    // only one second. That prevents the page from opening enlarged and then
+    // snapping back to a tiny full-page desktop view after ChatGPT finishes loading.
+    [defaults setBool:YES forKey:@"default.BrowsingSettings.requestDesktopWebsite"];
+    [defaults setInteger:CGChatGPTPhoneZoom forKey:@"default.BrowsingSettings.defaultPageZoomLevel"];
+
     // Reuse the last ChatGPT tab on later launches instead of creating a new
-    // hidden Gecko tab every single time. This cuts out the artificial startup
-    // delay while still letting the shell create ChatGPT on the first run.
+    // hidden Gecko tab every single time. This also keeps ChatGPT cookies and the
+    // guest/account web session in the same Gecko profile.
     [defaults setObject:@"lastTab" forKey:@"default.HomepageSettings.openingScreen"];
 
     [defaults setBool:NO forKey:@"default.HomepageSettings.showsRecommendations"];

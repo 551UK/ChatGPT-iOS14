@@ -157,6 +157,7 @@ CLANG="$(xcrun --sdk iphoneos --find clang)"
     "$ROOT/Tweak/ChatGPTShellMenu.m" \
     "$ROOT/Tweak/ChatGPTWebHistory.m" \
     "$ROOT/Tweak/ChatGPTSettingsPatch.m" \
+    "$ROOT/Tweak/ChatGPTMicBridge.m" \
     -o "$TWEAK_DIR/ChatGPTShell.dylib"
 cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTShell.plist"
 chmod 0755 "$TWEAK_DIR/ChatGPTShell.dylib"

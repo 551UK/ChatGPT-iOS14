@@ -40,3 +40,5 @@ static void CGInstallSettingsPatch(void) {
         }
     }
 }
+
+// Composer control bridge is compiled as a separate source file.

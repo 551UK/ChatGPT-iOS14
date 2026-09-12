@@ -37,7 +37,7 @@ jobs:
           VERSION="$(cat VERSION | tr -d '[:space:]')"
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="ChatGPT for jailbroken iOS 14. Uses bundled Gecko so ChatGPT Web works without installing Reynard separately or using an API key."
+          NOTES="Adds ChatGPT Web Voice on iOS 14 and gives the Voice tab a phone-sized layout with a larger composer, microphone, send button, and voice controls."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber

@@ -35,6 +35,17 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(cat VERSION | tr -d '[:space:]')"
+
+          # Never allow a re-run of an older workflow commit to replace a newer
+          # release. Compare this checkout's VERSION with the VERSION currently
+          # on main before touching GitHub Releases.
+          git fetch origin main --depth=1
+          MAIN_VERSION="$(git show origin/main:VERSION | tr -d '[:space:]')"
+          if [ "$VERSION" != "$MAIN_VERSION" ]; then
+            echo "Skipping stale release publish: workflow v$VERSION, main v$MAIN_VERSION"
+            exit 0
+          fi
+
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
           NOTES="Adds ChatGPT Web Voice on iOS 14 and gives the Voice tab a phone-sized layout with a larger composer, microphone, send button, and voice controls."

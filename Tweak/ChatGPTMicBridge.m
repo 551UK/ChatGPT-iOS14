@@ -79,14 +79,26 @@ static BOOL CGMBComposerLooksEmpty(id composer) {
            [lower isEqualToString:@"prompt chatgpt"];
 }
 
-static id CGMBFindWebMic(UIView *geckoRoot) {
+static BOOL CGMBElementIsVisiblyOnScreen(id element) {
+    CGRect frame = [element accessibilityFrame];
+    if (CGRectIsEmpty(frame) || CGRectIsNull(frame) || CGRectIsInfinite(frame)) return NO;
+    if (CGRectGetWidth(frame) < 4.0 || CGRectGetHeight(frame) < 4.0) return NO;
+    CGRect screen = UIScreen.mainScreen.bounds;
+    if (!CGRectIntersectsRect(frame, screen)) return NO;
+    if ([element isKindOfClass:UIView.class]) {
+        UIView *view = (UIView *)element;
+        if (view.hidden || view.alpha < 0.05 || !view.window) return NO;
+    }
+    return YES;
+}
+
+static id CGMBFindVisibleWebMic(UIView *geckoRoot) {
     return CGMBFindAX(geckoRoot, ^BOOL(id element) {
-        NSString *identifier = [[element accessibilityIdentifier] lowercaseString];
-        if ([identifier isEqualToString:@"chatgptmicbridge"]) return NO;
         NSString *text = CGMBAXText(element);
-        return [text containsString:@"microphone"] ||
-               [text containsString:@"dictat"] ||
-               [text containsString:@"voice input"];
+        BOOL looksLikeMic = [text containsString:@"microphone"] ||
+                            [text containsString:@"dictat"] ||
+                            [text containsString:@"voice input"];
+        return looksLikeMic && CGMBElementIsVisiblyOnScreen(element);
     }, [NSMutableSet set], 0);
 }
 
@@ -110,7 +122,7 @@ static UIView *CGMBFindFirstResponder(UIView *root) {
 
 - (instancetype)init {
     if ((self = [super init])) {
-        _timer = [NSTimer timerWithTimeInterval:0.30 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
+        _timer = [NSTimer timerWithTimeInterval:0.25 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
         [[NSRunLoop mainRunLoop] addTimer:_timer forMode:NSRunLoopCommonModes];
     }
     return self;
@@ -124,10 +136,12 @@ static UIView *CGMBFindFirstResponder(UIView *root) {
     if (!self.button) {
         self.button = [UIButton buttonWithType:UIButtonTypeSystem];
         self.button.tintColor = UIColor.labelColor;
-        [self.button setImage:[UIImage systemImageNamed:@"mic"] forState:UIControlStateNormal];
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:21 weight:UIImageSymbolWeightRegular];
+        UIImage *image = [[UIImage systemImageNamed:@"mic.fill"] imageByApplyingSymbolConfiguration:config];
+        [self.button setImage:image forState:UIControlStateNormal];
         self.button.accessibilityLabel = @"Microphone";
         self.button.accessibilityIdentifier = @"ChatGPTMicBridge";
-        self.button.frame = CGRectMake(0, 0, 42, 42);
+        self.button.frame = CGRectMake(0, 0, 44, 44);
         [self.button addTarget:self action:@selector(beginHandoff) forControlEvents:UIControlEventTouchUpInside];
     }
     if (self.button.superview != root.view) {
@@ -150,20 +164,28 @@ static UIView *CGMBFindFirstResponder(UIView *root) {
     }
 
     id composer = CGMBFindComposer(gecko);
-    if (!composer || !CGMBComposerLooksEmpty(composer) || CGMBFindWebMic(gecko)) {
+    if (!composer || !CGMBComposerLooksEmpty(composer)) {
+        self.button.hidden = YES;
+        return;
+    }
+
+    // ChatGPT exposes a hidden microphone accessibility element even while the
+    // guest composer is visually empty. Only suppress our bridge if the genuine
+    // web mic is actually visible and has a real on-screen accessibility frame.
+    if (CGMBFindVisibleWebMic(gecko)) {
         self.button.hidden = YES;
         return;
     }
 
     CGRect frame = [composer accessibilityFrame];
-    if (CGRectIsEmpty(frame)) {
+    if (CGRectIsEmpty(frame) || CGRectIsNull(frame) || CGRectIsInfinite(frame)) {
         self.button.hidden = YES;
         return;
     }
 
     [self ensureButtonInRoot:root];
     frame = [root.view convertRect:frame fromView:nil];
-    self.button.center = CGPointMake(CGRectGetMaxX(frame) - 70.0, CGRectGetMidY(frame));
+    self.button.center = CGPointMake(CGRectGetMaxX(frame) - 73.0, CGRectGetMidY(frame));
     self.button.hidden = NO;
     [root.view bringSubviewToFront:self.button];
 }
@@ -199,18 +221,20 @@ static UIView *CGMBFindFirstResponder(UIView *root) {
 }
 
 - (void)waitForWebMicInRoot:(UIViewController *)root gecko:(UIView *)gecko input:(id<UIKeyInput>)input responder:(UIView *)responder attempt:(NSInteger)attempt {
-    id mic = CGMBFindWebMic(gecko);
+    id mic = CGMBFindVisibleWebMic(gecko);
     if (mic) {
-        [mic accessibilityActivate];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [input deleteBackward];
-            [responder resignFirstResponder];
-            self.handingOff = NO;
-        });
-        return;
+        BOOL activated = [mic accessibilityActivate];
+        if (activated) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [input deleteBackward];
+                [responder resignFirstResponder];
+                self.handingOff = NO;
+            });
+            return;
+        }
     }
 
-    if (attempt >= 16) {
+    if (attempt >= 24) {
         [input deleteBackward];
         [responder resignFirstResponder];
         self.handingOff = NO;

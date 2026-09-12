@@ -3,7 +3,7 @@
 
 static NSString * const CGChatGPTBundleID = @"com.551.chatgpt14";
 static NSString * const CGChatGPTURL = @"https://chatgpt.com/";
-static NSString * const CGChatGPTDesktopUA = @"Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0";
+static NSString * const CGChatGPTMobileUA = @"Mozilla/5.0 (Android 15; Mobile; rv:155.0) Gecko/155.0 Firefox/155.0";
 
 static void CGConfigureChatGPTDefaults(void) {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -11,18 +11,20 @@ static void CGConfigureChatGPTDefaults(void) {
     [defaults setObject:@"customURL" forKey:@"default.NewTabSettings.newTabDisplayOption"];
     [defaults setObject:CGChatGPTURL forKey:@"default.NewTabSettings.customNewTabURL"];
 
-    // Use Gecko's MOBILE viewport so chatgpt.com lays the composer out for an
-    // iPhone instead of rendering the desktop page and then relying on page zoom.
-    // Keep a desktop Firefox user-agent through Reynard's compatibility settings
-    // so ChatGPT still exposes the real web microphone/Voice controls.
+    // Keep the stable phone-sized layout from v1.5.13, but identify the Gecko
+    // session as a real mobile Firefox browser too. The previous hybrid used a
+    // desktop Firefox UA with a mobile viewport, which made ChatGPT choose a
+    // desktop composer state: on an empty guest composer the dictation slot was
+    // blank until any text was entered. Matching the mobile viewport and UA lets
+    // ChatGPT choose its proper mobile composer without the old zoom hacks.
     [defaults setBool:NO forKey:@"default.BrowsingSettings.requestDesktopWebsite"];
     [defaults setInteger:100 forKey:@"default.BrowsingSettings.defaultPageZoomLevel"];
 
     [defaults setBool:YES forKey:@"default.CompatibilitySettings.useAndroidUserAgent"];
-    [defaults setObject:CGChatGPTDesktopUA forKey:@"default.CompatibilitySettings.customUserAgent"];
-    [defaults setObject:@"Linux x86_64" forKey:@"default.CompatibilitySettings.customPlatform"];
-    [defaults setObject:@"5.0 (X11)" forKey:@"default.CompatibilitySettings.customAppVersion"];
-    [defaults setObject:@"Linux x86_64" forKey:@"default.CompatibilitySettings.customOscpu"];
+    [defaults setObject:CGChatGPTMobileUA forKey:@"default.CompatibilitySettings.customUserAgent"];
+    [defaults setObject:@"Linux armv81" forKey:@"default.CompatibilitySettings.customPlatform"];
+    [defaults setObject:@"5.0 (Android 15)" forKey:@"default.CompatibilitySettings.customAppVersion"];
+    [defaults setObject:@"Linux armv81" forKey:@"default.CompatibilitySettings.customOscpu"];
     [defaults setObject:@"" forKey:@"default.CompatibilitySettings.customBuildID"];
 
     // Reuse the last ChatGPT tab on later launches instead of creating a new

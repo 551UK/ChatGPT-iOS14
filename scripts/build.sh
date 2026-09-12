@@ -39,7 +39,7 @@ fi
     /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ChatGPT" "$REYNARD_APP/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ChatGPT" "$REYNARD_APP/Info.plist" 2>/dev/null || true
 
-# The optional native section can use camera, photo, microphone and dictation.
+# Web Voice and the optional native section can use microphone access.
 set_plist_string() {
     local key="$1"
     local value="$2"
@@ -48,7 +48,7 @@ set_plist_string() {
 }
 set_plist_string NSCameraUsageDescription "Attach a photo to Native Chat."
 set_plist_string NSPhotoLibraryUsageDescription "Choose a photo for Native Chat."
-set_plist_string NSMicrophoneUsageDescription "Use voice input in Native Chat."
+set_plist_string NSMicrophoneUsageDescription "Use your microphone for ChatGPT Voice and voice input."
 set_plist_string NSSpeechRecognitionUsageDescription "Turn speech into text in Native Chat."
 
 # Do not claim Reynard's URL schemes. The ChatGPT shell does not need them.

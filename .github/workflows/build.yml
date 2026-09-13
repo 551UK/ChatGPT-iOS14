@@ -48,7 +48,7 @@ jobs:
 
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Adds ChatGPT Web Voice on iOS 14 and gives the Voice tab a phone-sized layout with a larger composer, microphone, send button, and voice controls."
+          NOTES="Moves the microphone helper beside New Chat. Tapping it types a real dot into ChatGPT so the genuine web microphone appears."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber

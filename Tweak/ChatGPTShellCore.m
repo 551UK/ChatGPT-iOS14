@@ -1,7 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
@@ -33,22 +32,13 @@ static UIView *CGFindView(UIView *root, NSString *needle) {
     return nil;
 }
 
-static UIView *CGFindGeckoNativeTextView(UIView *root) {
+static UIView *CGFindFirstResponderView(UIView *root) {
     if (!root) return nil;
-
-    // Reynard's patched Gecko engine uses ChildView for native text input.
-    // Prefer that exact engine view, but keep a generic insertText: fallback in
-    // case the class name changes in another Gecko build.
-    if (CGClassNameContains(root, @"ChildView") && [root respondsToSelector:@selector(insertText:)]) {
-        return root;
-    }
-
+    if (root.isFirstResponder) return root;
     for (UIView *subview in root.subviews) {
-        UIView *found = CGFindGeckoNativeTextView(subview);
+        UIView *found = CGFindFirstResponderView(subview);
         if (found) return found;
     }
-
-    if ([root respondsToSelector:@selector(insertText:)]) return root;
     return nil;
 }
 
@@ -91,9 +81,8 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
     if ([visited containsObject:key]) return nil;
     [visited addObject:key];
 
-    // Search children before the container. Gecko often exposes a large wrapper
-    // and the actual editable element with the same label; the deepest one is
-    // the useful target for accessibilityActivate.
+    // Gecko can expose both a composer wrapper and the actual editable element.
+    // Search children first so accessibilityActivate reaches the deepest editor.
     NSArray *elements = [node accessibilityElements];
     if ([elements isKindOfClass:NSArray.class]) {
         for (id child in elements) {
@@ -166,10 +155,11 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, weak) UIViewController *root;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) UIButton *menuButton;
-@property (nonatomic, strong) UIButton *micButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, assign) BOOL didSeedWebChat;
+@property (nonatomic, assign) BOOL didSeedComposerDot;
+@property (nonatomic, assign) NSUInteger composerSeedGeneration;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
 - (void)layoutShell;
@@ -206,10 +196,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     self.menuButton.accessibilityLabel = @"ChatGPT menu";
     [header addSubview:self.menuButton];
 
-    self.micButton = [self buttonWithSymbol:@"mic.fill" action:@selector(typeDotForVoice)];
-    self.micButton.accessibilityLabel = @"Show ChatGPT microphone";
-    [header addSubview:self.micButton];
-
     self.composeButton = [self buttonWithSymbol:@"square.and.pencil" action:@selector(newWebChat)];
     self.composeButton.accessibilityLabel = @"New chat";
     [header addSubview:self.composeButton];
@@ -226,6 +212,7 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
     [self seedWebChatIfNeeded];
+    [self startAutomaticComposerDot];
 }
 
 - (void)openMenu {
@@ -238,61 +225,75 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     CGResetLocalPromptCapture();
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+
+    // Every new chat gets one automatic dot once its real web composer exists.
+    [self startAutomaticComposerDot];
 }
 
-- (void)directDotAttemptInside:(UIView *)geckoView attempt:(NSInteger)attempt {
-    if (!geckoView || attempt > 4) return;
-
-    id composer = CGFindChatGPTComposerAX(geckoView);
-    if (composer && !CGComposerLooksEmpty(composer)) {
-        // A character is already present. Do not add another dot.
-        [self.root.view endEditing:YES];
-        return;
-    }
-
-    UIView *nativeTextView = CGFindGeckoNativeTextView(geckoView);
-    if (nativeTextView && [nativeTextView respondsToSelector:@selector(insertText:)]) {
-        // Gecko's ChildView implements insertText: by forwarding directly to
-        // TextInputHandler. Calling it directly avoids becoming first responder,
-        // so the iOS software keyboard does not need to appear.
-        ((void (*)(id, SEL, NSString *))objc_msgSend)(nativeTextView, @selector(insertText:), @".");
-    }
+- (void)startAutomaticComposerDot {
+    self.didSeedComposerDot = NO;
+    self.composerSeedGeneration += 1;
+    NSUInteger generation = self.composerSeedGeneration;
 
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.22 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-
-        UIView *currentGecko = CGFindView(strongSelf.root.view, @"GeckoView");
-        id currentComposer = currentGecko ? CGFindChatGPTComposerAX(currentGecko) : nil;
-        if (currentComposer && !CGComposerLooksEmpty(currentComposer)) {
-            [strongSelf.root.view endEditing:YES];
-            return;
-        }
-
-        // Focus can arrive asynchronously from accessibilityActivate. Retry a
-        // small number of times, but always verify the composer is still empty
-        // first so a successful insert cannot turn into multiple dots.
-        if (currentComposer) [currentComposer accessibilityActivate];
-        [strongSelf directDotAttemptInside:currentGecko attempt:attempt + 1];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf attemptAutomaticComposerDot:generation attempt:0];
     });
 }
 
-- (void)typeDotForVoice {
+- (void)attemptAutomaticComposerDot:(NSUInteger)generation attempt:(NSInteger)attempt {
+    if (generation != self.composerSeedGeneration || self.didSeedComposerDot || attempt > 120) return;
+    if (!self.root.isViewLoaded || !self.root.view.window) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf attemptAutomaticComposerDot:generation attempt:attempt + 1];
+        });
+        return;
+    }
+
     UIView *geckoView = CGFindView(self.root.view, @"GeckoView");
-    if (!geckoView) return;
+    id composer = geckoView ? CGFindChatGPTComposerAX(geckoView) : nil;
 
-    id composer = CGFindChatGPTComposerAX(geckoView);
-    if (!composer) return;
+    // Never alter an existing draft or any composer that already has text.
+    if (composer && !CGComposerLooksEmpty(composer)) {
+        self.didSeedComposerDot = YES;
+        return;
+    }
 
-    // Give the real web composer DOM focus, then write straight through Gecko's
-    // native text-input handler. We deliberately never call becomeFirstResponder
-    // here, so tapping the top mic should type '.' without opening the keyboard.
+    if (!composer) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf attemptAutomaticComposerDot:generation attempt:attempt + 1];
+        });
+        return;
+    }
+
+    // This is the same accessibility-focus path used by the earlier invisible
+    // composer seed, but now the payload is an ordinary printable dot. A normal
+    // character is what ChatGPT itself uses to expose its genuine web mic.
     [composer accessibilityActivate];
 
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf directDotAttemptInside:geckoView attempt:0];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || generation != strongSelf.composerSeedGeneration || strongSelf.didSeedComposerDot) return;
+
+        UIView *responder = CGFindFirstResponderView(strongSelf.root.view);
+        if (responder && [responder conformsToProtocol:@protocol(UIKeyInput)] && [responder respondsToSelector:@selector(insertText:)]) {
+            [(id<UIKeyInput>)responder insertText:@"."];
+            strongSelf.didSeedComposerDot = YES;
+
+            // Let Gecko deliver the input event, then immediately release focus
+            // so the software keyboard does not remain on screen.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [strongSelf.root.view endEditing:YES];
+            });
+            return;
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [strongSelf attemptAutomaticComposerDot:generation attempt:attempt + 1];
+        });
     });
 }
 
@@ -349,7 +350,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     CGFloat headerHeight = 44.0;
     self.header.frame = CGRectMake(0, safe.top, width, headerHeight);
     self.menuButton.frame = CGRectMake(7, 2, 44, 40);
-    self.micButton.frame = CGRectMake(width - 95, 2, 44, 40);
     self.composeButton.frame = CGRectMake(width - 51, 2, 44, 40);
     self.titleLabel.frame = CGRectMake(MAX(58.0, (width - 160.0) / 2.0), 0, 160.0, headerHeight);
 

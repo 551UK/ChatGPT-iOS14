@@ -48,7 +48,7 @@ jobs:
 
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Uses ChatGPT's real focused Gecko responder to type a literal dot from the top mic, then immediately dismisses editing so the keyboard does not stay open."
+          NOTES="Moves the top mic dot insertion into the ChatGPT page itself through Gecko JavaScript instead of UIKit keyboard injection."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber

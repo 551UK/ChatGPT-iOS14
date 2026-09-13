@@ -3,10 +3,6 @@
 #import <objc/runtime.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
-// U+2800 BRAILLE PATTERN BLANK renders as a blank cell, but unlike zero-width
-// format controls it is a real Unicode symbol (not whitespace/control text).
-// That makes ProseMirror/React much less likely to normalize it away.
-static NSString * const CGComposerMicSeed = @"\u2800";
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
 static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
@@ -118,20 +114,6 @@ static id CGFindChatGPTComposerAX(UIView *root) {
     return CGFindComposerAccessibilityElement(root, [NSMutableSet set], 0);
 }
 
-static BOOL CGComposerAccessibilityValueLooksEmpty(id composer) {
-    NSString *value = [composer accessibilityValue];
-    if (!value.length) return YES;
-
-    NSString *lower = value.lowercaseString;
-    if ([lower isEqualToString:@"ask chatgpt"] ||
-        [lower isEqualToString:@"ask anything"] ||
-        [lower isEqualToString:@"message chatgpt"] ||
-        [lower isEqualToString:@"prompt chatgpt"]) {
-        return YES;
-    }
-    return NO;
-}
-
 static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     if (!root) return nil;
     if ([root isKindOfClass:UIButton.class]) {
@@ -159,10 +141,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, weak) UIViewController *root;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) UIButton *menuButton;
+@property (nonatomic, strong) UIButton *micButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) NSTimer *composerAssistTimer;
-@property (nonatomic, assign) NSTimeInterval lastComposerAssistAttempt;
 @property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -174,10 +155,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 - (instancetype)initWithRoot:(UIViewController *)root {
     if ((self = [super init])) _root = root;
     return self;
-}
-
-- (void)dealloc {
-    [self.composerAssistTimer invalidate];
 }
 
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -204,6 +181,10 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     self.menuButton.accessibilityLabel = @"ChatGPT menu";
     [header addSubview:self.menuButton];
 
+    self.micButton = [self buttonWithSymbol:@"mic.fill" action:@selector(typeDotForVoice)];
+    self.micButton.accessibilityLabel = @"Show ChatGPT microphone";
+    [header addSubview:self.micButton];
+
     self.composeButton = [self buttonWithSymbol:@"square.and.pencil" action:@selector(newWebChat)];
     self.composeButton.accessibilityLabel = @"New chat";
     [header addSubview:self.composeButton];
@@ -219,18 +200,7 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [self.root.view addSubview:header];
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
-
     [self seedWebChatIfNeeded];
-
-    // The guest composer does not expose dictation until it has received a real
-    // text-input event. Poll for an empty composer and seed a visually blank,
-    // non-whitespace Unicode symbol through Gecko's UIKeyInput path.
-    self.composerAssistTimer = [NSTimer timerWithTimeInterval:1.25
-                                                       target:self
-                                                     selector:@selector(maintainEmptyComposerMic)
-                                                     userInfo:nil
-                                                      repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.composerAssistTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)openMenu {
@@ -241,17 +211,16 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 - (void)newWebChat {
     CGCaptureWebRecentsFromRoot(self.root);
     CGResetLocalPromptCapture();
-    self.lastComposerAssistAttempt = 0;
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
-- (void)seedWordJoinerIntoFocusedComposerInside:(UIView *)geckoView retry:(NSInteger)retry {
+- (void)insertDotIntoFocusedComposerInside:(UIView *)geckoView retry:(NSInteger)retry {
     UIView *firstResponder = CGFindFirstResponderView(self.root.view);
-    if (!firstResponder && retry < 5) {
+    if (!firstResponder && retry < 12) {
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.025 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [weakSelf seedWordJoinerIntoFocusedComposerInside:geckoView retry:retry + 1];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf insertDotIntoFocusedComposerInside:geckoView retry:retry + 1];
         });
         return;
     }
@@ -260,37 +229,21 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     if (geckoView && !CGViewIsDescendantOfView(firstResponder, geckoView)) return;
 
     id<UIKeyInput> input = (id<UIKeyInput>)firstResponder;
-    [input insertText:CGComposerMicSeed];
-
-    // Drop focus immediately so the keyboard should not remain on screen. The
-    // blank symbol stays in the web composer so React sees the same non-empty
-    // state produced by typing a normal character and exposes the real mic.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.015 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [firstResponder resignFirstResponder];
-    });
+    [input insertText:@"."];
 }
 
-- (void)maintainEmptyComposerMic {
-    if (!self.root.isViewLoaded || !self.root.view.window) return;
-    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
-    if (self.root.presentedViewController) return;
-
+- (void)typeDotForVoice {
     UIView *geckoView = CGFindView(self.root.view, @"GeckoView");
     if (!geckoView) return;
 
-    // Never interfere while the user is already typing into the page.
-    UIView *existingFirstResponder = CGFindFirstResponderView(self.root.view);
-    if (existingFirstResponder) return;
-
     id composer = CGFindChatGPTComposerAX(geckoView);
-    if (!composer || !CGComposerAccessibilityValueLooksEmpty(composer)) return;
+    if (!composer) return;
 
-    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-    if (now - self.lastComposerAssistAttempt < 8.0) return;
-    self.lastComposerAssistAttempt = now;
-
+    // A normal printable character is the one state transition we know makes
+    // ChatGPT expose its genuine dictation microphone on this old Gecko build.
+    // Keep the action deliberately simple: focus the real composer and type '.'.
     if (![composer accessibilityActivate]) return;
-    [self seedWordJoinerIntoFocusedComposerInside:geckoView retry:0];
+    [self insertDotIntoFocusedComposerInside:geckoView retry:0];
 }
 
 - (void)seedWebChatIfNeeded {
@@ -346,8 +299,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     CGFloat headerHeight = 44.0;
     self.header.frame = CGRectMake(0, safe.top, width, headerHeight);
     self.menuButton.frame = CGRectMake(7, 2, 44, 40);
+    self.micButton.frame = CGRectMake(width - 95, 2, 44, 40);
     self.composeButton.frame = CGRectMake(width - 51, 2, 44, 40);
-    self.titleLabel.frame = CGRectMake(58, 0, MAX(0, width - 116), headerHeight);
+    self.titleLabel.frame = CGRectMake(MAX(58.0, (width - 160.0) / 2.0), 0, 160.0, headerHeight);
 
     if (content) {
         CGFloat top = safe.top + headerHeight;

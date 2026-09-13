@@ -39,7 +39,6 @@ fi
     /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ChatGPT" "$REYNARD_APP/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ChatGPT" "$REYNARD_APP/Info.plist" 2>/dev/null || true
 
-# Web Voice and the optional native section can use microphone access.
 set_plist_string() {
     local key="$1"
     local value="$2"
@@ -131,28 +130,9 @@ fi
 ditto "$TS_APP" "$TOOLS/TrollStore.app"
 chmod 0755 "$TOOLS/TrollStore.app/trollstorehelper"
 
-# Build the ChatGPT shell. The old v1 ChatGPT UI is linked back in only for the
-# selectable Native Chat section. The default Web section is the real chatgpt.com
-# page rendered by Gecko; browser chrome, address bars and tab UI are hidden.
+# Build the native shell around the real chatgpt.com page rendered by Gecko.
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 CLANG="$(xcrun --sdk iphoneos --find clang)"
-SWIFTC="$(xcrun --sdk iphoneos --find swiftc)"
-
-# Tiny Swift bridge into Reynard's public GeckoView API. This lets the native
-# top mic ask the selected GeckoSession to run a javascript: URL in the current
-# ChatGPT page, avoiding the broken UIKit text-input handoff on this old Gecko.
-"$SWIFTC" \
-    -target arm64-apple-ios14.0 \
-    -sdk "$SDK" \
-    -F "$CHATGPT_APP/Frameworks" \
-    -framework GeckoView \
-    -emit-library -parse-as-library \
-    -Xlinker -install_name \
-    -Xlinker /Library/MobileSubstrate/DynamicLibraries/libChatGPTScriptBridge.dylib \
-    -Xlinker -rpath \
-    -Xlinker @executable_path/Frameworks \
-    "$ROOT/Tweak/ChatGPTScriptBridge.swift" \
-    -o "$TWEAK_DIR/libChatGPTScriptBridge.dylib"
 
 "$CLANG" \
     -arch arm64 \
@@ -168,8 +148,6 @@ SWIFTC="$(xcrun --sdk iphoneos --find swiftc)"
     -framework Speech \
     -framework AVFoundation \
     -framework WebKit \
-    -L "$TWEAK_DIR" \
-    -lChatGPTScriptBridge \
     -lsqlite3 \
     "$ROOT/Tweak/ChatGPTGeckoBootstrap.m" \
     "$ROOT/Tweak/NativeChatSupport.m" \
@@ -177,12 +155,10 @@ SWIFTC="$(xcrun --sdk iphoneos --find swiftc)"
     "$ROOT/Tweak/ChatGPTShellMenu.m" \
     "$ROOT/Tweak/ChatGPTWebHistory.m" \
     "$ROOT/Tweak/ChatGPTSettingsPatch.m" \
-    "$ROOT/Tweak/ChatGPTMicBridge.m" \
     -o "$TWEAK_DIR/ChatGPTShell.dylib"
 cp "$ROOT/Tweak/ChatGPTGeckoBootstrap.plist" "$TWEAK_DIR/ChatGPTShell.plist"
-chmod 0755 "$TWEAK_DIR/ChatGPTShell.dylib" "$TWEAK_DIR/libChatGPTScriptBridge.dylib"
+chmod 0755 "$TWEAK_DIR/ChatGPTShell.dylib"
 if command -v ldid >/dev/null 2>&1; then
-    ldid -S "$TWEAK_DIR/libChatGPTScriptBridge.dylib"
     ldid -S "$TWEAK_DIR/ChatGPTShell.dylib"
 fi
 

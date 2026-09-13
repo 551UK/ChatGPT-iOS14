@@ -33,13 +33,22 @@ static UIView *CGFindView(UIView *root, NSString *needle) {
     return nil;
 }
 
-static UIView *CGFindFirstResponderView(UIView *root) {
+static UIView *CGFindGeckoNativeTextView(UIView *root) {
     if (!root) return nil;
-    if (root.isFirstResponder) return root;
+
+    // Reynard's patched Gecko engine uses ChildView for native text input.
+    // Prefer that exact engine view, but keep a generic insertText: fallback in
+    // case the class name changes in another Gecko build.
+    if (CGClassNameContains(root, @"ChildView") && [root respondsToSelector:@selector(insertText:)]) {
+        return root;
+    }
+
     for (UIView *subview in root.subviews) {
-        UIView *found = CGFindFirstResponderView(subview);
+        UIView *found = CGFindGeckoNativeTextView(subview);
         if (found) return found;
     }
+
+    if ([root respondsToSelector:@selector(insertText:)]) return root;
     return nil;
 }
 
@@ -82,9 +91,9 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
     if ([visited containsObject:key]) return nil;
     [visited addObject:key];
 
-    // Search children before their container. Gecko often exposes both a large
-    // composer container and the actual editable element with the same label;
-    // the deepest matching element is the one that can really take focus.
+    // Search children before the container. Gecko often exposes a large wrapper
+    // and the actual editable element with the same label; the deepest one is
+    // the useful target for accessibilityActivate.
     NSArray *elements = [node accessibilityElements];
     if ([elements isKindOfClass:NSArray.class]) {
         for (id child in elements) {
@@ -117,6 +126,19 @@ static id CGFindChatGPTComposerAX(UIView *root) {
     return CGFindComposerAccessibilityElement(root, [NSMutableSet set], 0);
 }
 
+static BOOL CGComposerLooksEmpty(id composer) {
+    if (!composer) return YES;
+    NSString *value = [composer accessibilityValue];
+    if (!value.length) return YES;
+
+    NSString *lower = value.lowercaseString;
+    NSArray<NSString *> *placeholders = @[@"ask chatgpt", @"ask anything", @"message chatgpt", @"prompt chatgpt"];
+    for (NSString *placeholder in placeholders) {
+        if ([lower isEqualToString:placeholder]) return YES;
+    }
+    return NO;
+}
+
 static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
     if (!root) return nil;
     if ([root isKindOfClass:UIButton.class]) {
@@ -147,9 +169,6 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, strong) UIButton *micButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UIImageView *webMenuRepairIcon;
-@property (nonatomic, strong) UIImageView *composerPlusRepairIcon;
-@property (nonatomic, strong) NSTimer *webIconRepairTimer;
 @property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -163,27 +182,12 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     return self;
 }
 
-- (void)dealloc {
-    [self.webIconRepairTimer invalidate];
-}
-
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.tintColor = UIColor.labelColor;
     [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
-}
-
-- (UIImageView *)repairIconWithSymbol:(NSString *)symbol pointSize:(CGFloat)pointSize {
-    UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:pointSize weight:UIImageSymbolWeightRegular];
-    UIImage *image = [[UIImage systemImageNamed:symbol] imageByApplyingSymbolConfiguration:config];
-    UIImageView *view = [[UIImageView alloc] initWithImage:image];
-    view.tintColor = UIColor.labelColor;
-    view.contentMode = UIViewContentModeCenter;
-    view.userInteractionEnabled = NO;
-    view.backgroundColor = UIColor.clearColor;
-    return view;
 }
 
 - (void)install {
@@ -218,25 +222,10 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     self.titleLabel = title;
     [header addSubview:title];
 
-    // Old Gecko occasionally leaves ChatGPT's SVG symbols blank until they are
-    // interacted with. These transparent native symbols sit over the genuine
-    // web buttons; touches still go straight through to ChatGPT underneath.
-    self.webMenuRepairIcon = [self repairIconWithSymbol:@"line.horizontal.3" pointSize:18.0];
-    self.composerPlusRepairIcon = [self repairIconWithSymbol:@"plus" pointSize:20.0];
-    [self.root.view addSubview:self.webMenuRepairIcon];
-    [self.root.view addSubview:self.composerPlusRepairIcon];
-
     [self.root.view addSubview:header];
     [self.root.view bringSubviewToFront:header];
     [self layoutShell];
     [self seedWebChatIfNeeded];
-
-    self.webIconRepairTimer = [NSTimer timerWithTimeInterval:0.35
-                                                      target:self
-                                                    selector:@selector(updateWebIconRepairs)
-                                                    userInfo:nil
-                                                     repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.webIconRepairTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)openMenu {
@@ -251,52 +240,41 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
-- (BOOL)insertDotIntoResponder:(UIView *)responder {
-    if (!responder) return NO;
+- (void)directDotAttemptInside:(UIView *)geckoView attempt:(NSInteger)attempt {
+    if (!geckoView || attempt > 4) return;
 
-    if ([responder respondsToSelector:@selector(insertText:)]) {
-        ((void (*)(id, SEL, NSString *))objc_msgSend)(responder, @selector(insertText:), @".");
-        return YES;
+    id composer = CGFindChatGPTComposerAX(geckoView);
+    if (composer && !CGComposerLooksEmpty(composer)) {
+        // A character is already present. Do not add another dot.
+        [self.root.view endEditing:YES];
+        return;
     }
 
-    if ([responder conformsToProtocol:@protocol(UIKeyInput)]) {
-        [(id<UIKeyInput>)responder insertText:@"."];
-        return YES;
+    UIView *nativeTextView = CGFindGeckoNativeTextView(geckoView);
+    if (nativeTextView && [nativeTextView respondsToSelector:@selector(insertText:)]) {
+        // Gecko's ChildView implements insertText: by forwarding directly to
+        // TextInputHandler. Calling it directly avoids becoming first responder,
+        // so the iOS software keyboard does not need to appear.
+        ((void (*)(id, SEL, NSString *))objc_msgSend)(nativeTextView, @selector(insertText:), @".");
     }
-
-    return NO;
-}
-
-- (void)forceDotIntoComposerInside:(UIView *)geckoView retry:(NSInteger)retry {
-    if (!geckoView || retry > 50) return;
-
-    UIView *firstResponder = CGFindFirstResponderView(geckoView);
-    if ([self insertDotIntoResponder:firstResponder]) return;
-
-    // GeckoView is only a wrapper. Its first child is the native Gecko engine
-    // view returned by GeckoSession.window.view(). Make that view first
-    // responder as a fallback, then send the same insertText: action used by a
-    // physical keyboard key.
-    UIView *engineView = geckoView.subviews.firstObject;
-    if (engineView) {
-        if (!engineView.isFirstResponder) [engineView becomeFirstResponder];
-        firstResponder = CGFindFirstResponderView(geckoView);
-        if ([self insertDotIntoResponder:firstResponder]) return;
-        if (engineView.isFirstResponder && [self insertDotIntoResponder:engineView]) return;
-    }
-
-    // Last responder-chain fallback. If Gecko has acquired text focus but its
-    // native view is not discoverable as a normal UIView first responder, UIKit
-    // will still route insertText: down the active responder chain.
-    BOOL sent = [UIApplication.sharedApplication sendAction:@selector(insertText:)
-                                                         to:nil
-                                                       from:@"."
-                                                   forEvent:nil];
-    if (sent) return;
 
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf forceDotIntoComposerInside:geckoView retry:retry + 1];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.22 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        UIView *currentGecko = CGFindView(strongSelf.root.view, @"GeckoView");
+        id currentComposer = currentGecko ? CGFindChatGPTComposerAX(currentGecko) : nil;
+        if (currentComposer && !CGComposerLooksEmpty(currentComposer)) {
+            [strongSelf.root.view endEditing:YES];
+            return;
+        }
+
+        // Focus can arrive asynchronously from accessibilityActivate. Retry a
+        // small number of times, but always verify the composer is still empty
+        // first so a successful insert cannot turn into multiple dots.
+        if (currentComposer) [currentComposer accessibilityActivate];
+        [strongSelf directDotAttemptInside:currentGecko attempt:attempt + 1];
     });
 }
 
@@ -307,60 +285,15 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     id composer = CGFindChatGPTComposerAX(geckoView);
     if (!composer) return;
 
-    // A printable character is the state transition we know makes the genuine
-    // ChatGPT dictation mic appear. Activate the deepest editable accessibility
-    // element, then keep trying the real Gecko text-input path until focus has
-    // finished moving from the native header back into web content.
+    // Give the real web composer DOM focus, then write straight through Gecko's
+    // native text-input handler. We deliberately never call becomeFirstResponder
+    // here, so tapping the top mic should type '.' without opening the keyboard.
     [composer accessibilityActivate];
-    if ([composer isKindOfClass:UIView.class]) {
-        [(UIView *)composer becomeFirstResponder];
-    }
 
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf forceDotIntoComposerInside:geckoView retry:0];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf directDotAttemptInside:geckoView attempt:0];
     });
-}
-
-- (void)updateWebIconRepairs {
-    if (!self.root.isViewLoaded || !self.root.view.window) {
-        self.webMenuRepairIcon.hidden = YES;
-        self.composerPlusRepairIcon.hidden = YES;
-        return;
-    }
-
-    UIView *content = CGFindView(self.root.view, @"ContentView");
-    if (content) {
-        // ChatGPT's own top-left circular menu button sits about 36 pt into the
-        // web viewport. Draw only the glyph; the real web circle/button remains
-        // underneath and handles the tap.
-        self.webMenuRepairIcon.frame = CGRectMake(20.0, CGRectGetMinY(content.frame) + 20.0, 34.0, 34.0);
-        self.webMenuRepairIcon.hidden = NO;
-        [self.root.view bringSubviewToFront:self.webMenuRepairIcon];
-    } else {
-        self.webMenuRepairIcon.hidden = YES;
-    }
-
-    UIView *geckoView = CGFindView(self.root.view, @"GeckoView");
-    id composer = geckoView ? CGFindChatGPTComposerAX(geckoView) : nil;
-    if (composer) {
-        CGRect frame = [composer accessibilityFrame];
-        if (!CGRectIsEmpty(frame) && !CGRectIsNull(frame) && !CGRectIsInfinite(frame)) {
-            frame = [self.root.view convertRect:frame fromView:nil];
-            self.composerPlusRepairIcon.frame = CGRectMake(CGRectGetMinX(frame) + 10.0,
-                                                           CGRectGetMidY(frame) - 17.0,
-                                                           34.0,
-                                                           34.0);
-            self.composerPlusRepairIcon.hidden = NO;
-            [self.root.view bringSubviewToFront:self.composerPlusRepairIcon];
-        } else {
-            self.composerPlusRepairIcon.hidden = YES;
-        }
-    } else {
-        self.composerPlusRepairIcon.hidden = YES;
-    }
-
-    [self.root.view bringSubviewToFront:self.header];
 }
 
 - (void)seedWebChatIfNeeded {

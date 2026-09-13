@@ -48,7 +48,7 @@ jobs:
 
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Moves the microphone helper beside New Chat. Tapping it types a real dot into ChatGPT so the genuine web microphone appears."
+          NOTES="Makes the top microphone reliably type a real dot into ChatGPT and repairs the buggy web menu and attachment symbols with native overlays."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber

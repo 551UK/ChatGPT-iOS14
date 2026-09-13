@@ -1,10 +1,8 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
-static NSString * const CGComposerMicSeed = @".";
 static const void *CGCoordinatorKey = &CGCoordinatorKey;
 static const void *CGLayoutKey = &CGLayoutKey;
 static __weak UIViewController *CGWebRoot = nil;
@@ -14,7 +12,9 @@ extern void CGCaptureWebRecentsFromRoot(UIViewController *root);
 extern void CGResetLocalPromptCapture(void);
 extern NSString *CGStoredSelectedWebURL(void);
 
-UIViewController *CGCurrentWebRoot(void) { return CGWebRoot; }
+UIViewController *CGCurrentWebRoot(void) {
+    return CGWebRoot;
+}
 
 static BOOL CGClassNameContains(id object, NSString *needle) {
     if (!object) return NO;
@@ -45,6 +45,48 @@ static NSString *CGAXCombinedText(id element) {
     return [[parts componentsJoinedByString:@" "] lowercaseString];
 }
 
+static BOOL CGAXTextContains(id element, NSString *needle) {
+    if (!element || !needle.length) return NO;
+    return [CGAXCombinedText(element) rangeOfString:needle.lowercaseString].location != NSNotFound;
+}
+
+static id CGFindAXTextElement(id node, NSString *needle, NSMutableSet<NSValue *> *visited, NSInteger depth) {
+    if (!node || depth > 14) return nil;
+    NSValue *key = [NSValue valueWithPointer:(__bridge const void *)node];
+    if ([visited containsObject:key]) return nil;
+    [visited addObject:key];
+
+    NSArray *elements = [node accessibilityElements];
+    if ([elements isKindOfClass:NSArray.class]) {
+        for (id child in elements) {
+            id found = CGFindAXTextElement(child, needle, visited, depth + 1);
+            if (found) return found;
+        }
+    }
+
+    NSInteger count = [node accessibilityElementCount];
+    if (count != NSNotFound && count > 0 && count < 512) {
+        for (NSInteger index = 0; index < count; index++) {
+            id child = [node accessibilityElementAtIndex:index];
+            id found = CGFindAXTextElement(child, needle, visited, depth + 1);
+            if (found) return found;
+        }
+    }
+
+    if ([node isKindOfClass:UIView.class]) {
+        for (UIView *subview in [(UIView *)node subviews]) {
+            id found = CGFindAXTextElement(subview, needle, visited, depth + 1);
+            if (found) return found;
+        }
+    }
+
+    return CGAXTextContains(node, needle) ? node : nil;
+}
+
+static id CGFindAXText(UIView *root, NSString *needle) {
+    return root ? CGFindAXTextElement(root, needle, [NSMutableSet set], 0) : nil;
+}
+
 static BOOL CGAXLooksLikeChatGPTComposer(id element) {
     NSString *text = CGAXCombinedText(element);
     if (!text.length) return NO;
@@ -60,7 +102,6 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
     if ([visited containsObject:key]) return nil;
     [visited addObject:key];
 
-    // Keep the older search order that was proven to focus the real composer.
     if (CGAXLooksLikeChatGPTComposer(node)) return node;
 
     NSArray *elements = [node accessibilityElements];
@@ -74,7 +115,8 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
     NSInteger count = [node accessibilityElementCount];
     if (count != NSNotFound && count > 0 && count < 512) {
         for (NSInteger index = 0; index < count; index++) {
-            id found = CGFindComposerAccessibilityElement([node accessibilityElementAtIndex:index], visited, depth + 1);
+            id child = [node accessibilityElementAtIndex:index];
+            id found = CGFindComposerAccessibilityElement(child, visited, depth + 1);
             if (found) return found;
         }
     }
@@ -92,14 +134,16 @@ static id CGFindChatGPTComposerAX(UIView *root) {
     return root ? CGFindComposerAccessibilityElement(root, [NSMutableSet set], 0) : nil;
 }
 
-static BOOL CGComposerAccessibilityValueLooksEmpty(id composer) {
-    NSString *value = [composer accessibilityValue];
-    if (!value.length) return YES;
+static BOOL CGComposerHasUserText(id composer) {
+    if (!composer) return NO;
+    NSString *value = [[composer accessibilityValue] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!value.length) return NO;
+
     NSString *lower = value.lowercaseString;
-    return [lower isEqualToString:@"ask chatgpt"] ||
-           [lower isEqualToString:@"ask anything"] ||
-           [lower isEqualToString:@"message chatgpt"] ||
-           [lower isEqualToString:@"prompt chatgpt"];
+    for (NSString *placeholder in @[@"ask chatgpt", @"ask anything", @"message chatgpt", @"prompt chatgpt"]) {
+        if ([lower isEqualToString:placeholder]) return NO;
+    }
+    return YES;
 }
 
 static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
@@ -131,8 +175,9 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, strong) UIButton *menuButton;
 @property (nonatomic, strong) UIButton *composeButton;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) NSTimer *composerAssistTimer;
-@property (nonatomic, assign) NSTimeInterval lastComposerAssistAttempt;
+@property (nonatomic, strong) UILabel *micHintLabel;
+@property (nonatomic, strong) NSTimer *micHintTimer;
+@property (nonatomic, assign) BOOL micHintDismissed;
 @property (nonatomic, assign) BOOL didSeedWebChat;
 - (instancetype)initWithRoot:(UIViewController *)root;
 - (void)install;
@@ -147,7 +192,7 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 }
 
 - (void)dealloc {
-    [self.composerAssistTimer invalidate];
+    [self.micHintTimer invalidate];
 }
 
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
@@ -186,17 +231,32 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     self.titleLabel = title;
     [header addSubview:title];
 
+    UILabel *micHint = [UILabel new];
+    micHint.text = @"Type one digit to reveal microphone";
+    micHint.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+    micHint.textColor = UIColor.secondaryLabelColor;
+    micHint.textAlignment = NSTextAlignmentCenter;
+    micHint.numberOfLines = 1;
+    micHint.adjustsFontSizeToFitWidth = YES;
+    micHint.minimumScaleFactor = 0.80;
+    micHint.userInteractionEnabled = NO;
+    micHint.hidden = YES;
+    self.micHintLabel = micHint;
+
     [self.root.view addSubview:header];
+    [self.root.view addSubview:micHint];
     [self.root.view bringSubviewToFront:header];
+    [self.root.view bringSubviewToFront:micHint];
     [self layoutShell];
     [self seedWebChatIfNeeded];
 
-    self.composerAssistTimer = [NSTimer timerWithTimeInterval:1.0
-                                                       target:self
-                                                     selector:@selector(maintainEmptyComposerMic)
-                                                     userInfo:nil
-                                                      repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.composerAssistTimer forMode:NSRunLoopCommonModes];
+    self.micHintTimer = [NSTimer timerWithTimeInterval:0.35
+                                                target:self
+                                              selector:@selector(refreshMicHint)
+                                              userInfo:nil
+                                               repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.micHintTimer forMode:NSRunLoopCommonModes];
+    [self refreshMicHint];
 }
 
 - (void)openMenu {
@@ -207,89 +267,66 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 - (void)newWebChat {
     CGCaptureWebRecentsFromRoot(self.root);
     CGResetLocalPromptCapture();
-    self.lastComposerAssistAttempt = 0;
+    self.micHintDismissed = NO;
+    self.micHintLabel.hidden = YES;
+
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
-- (id)activeKeyboardImpl {
-    Class keyboardClass = NSClassFromString(@"UIKeyboardImpl");
-    if (!keyboardClass) return nil;
+- (void)positionMicHintAboveHeading:(id)heading {
+    CGFloat width = CGRectGetWidth(self.root.view.bounds);
+    CGFloat height = CGRectGetHeight(self.root.view.bounds);
+    UIEdgeInsets safe = self.root.view.safeAreaInsets;
+    CGFloat headerBottom = safe.top + 44.0;
+    CGFloat labelWidth = MIN(300.0, MAX(180.0, width - 40.0));
+    CGFloat y = headerBottom + MAX(36.0, (height - headerBottom - safe.bottom) * 0.27);
 
-    id keyboard = nil;
-    SEL activeSelector = NSSelectorFromString(@"activeInstance");
-    if ([keyboardClass respondsToSelector:activeSelector]) {
-        keyboard = ((id (*)(id, SEL))objc_msgSend)(keyboardClass, activeSelector);
-    }
-
-    if (!keyboard) {
-        SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
-        if ([keyboardClass respondsToSelector:sharedSelector]) {
-            keyboard = ((id (*)(id, SEL))objc_msgSend)(keyboardClass, sharedSelector);
+    CGRect screenFrame = heading ? [heading accessibilityFrame] : CGRectNull;
+    if (!CGRectIsNull(screenFrame) && !CGRectIsEmpty(screenFrame) && !CGRectIsInfinite(screenFrame) && self.root.view.window) {
+        CGRect windowFrame = [self.root.view.window convertRect:screenFrame fromWindow:nil];
+        CGRect rootFrame = [self.root.view convertRect:windowFrame fromView:self.root.view.window];
+        if (CGRectGetMinY(rootFrame) > headerBottom + 40.0 && CGRectGetMinY(rootFrame) < height - 100.0) {
+            y = CGRectGetMinY(rootFrame) - 30.0;
         }
     }
-    return keyboard;
+
+    self.micHintLabel.frame = CGRectMake((width - labelWidth) / 2.0, y, labelWidth, 22.0);
 }
 
-- (void)insertDotThroughKeyboardImplInto:(UIView *)geckoView retry:(NSInteger)retry {
-    if (retry > 18) {
-        [self.root.view endEditing:YES];
+- (void)refreshMicHint {
+    if (!self.root.isViewLoaded || !self.root.view.window || self.micHintDismissed) {
+        self.micHintLabel.hidden = YES;
         return;
     }
-
-    id composer = CGFindChatGPTComposerAX(geckoView);
-    if (composer && !CGComposerAccessibilityValueLooksEmpty(composer)) {
-        [self.root.view endEditing:YES];
+    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive || self.root.presentedViewController) {
+        self.micHintLabel.hidden = YES;
         return;
     }
-
-    id keyboard = [self activeKeyboardImpl];
-    SEL insertSelector = NSSelectorFromString(@"insertText:");
-    if (keyboard && [keyboard respondsToSelector:insertSelector]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(keyboard, insertSelector, CGComposerMicSeed);
-    }
-
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.055 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-
-        UIView *currentGecko = CGFindView(strongSelf.root.view, @"GeckoView");
-        id currentComposer = currentGecko ? CGFindChatGPTComposerAX(currentGecko) : nil;
-        if (currentComposer && !CGComposerAccessibilityValueLooksEmpty(currentComposer)) {
-            [strongSelf.root.view endEditing:YES];
-            return;
-        }
-
-        // Gecko can take a few ticks to attach its web editor as UIKit's keyboard
-        // delegate. Re-activate the composer and retry UIKeyboardImpl rather than
-        // trying to discover a responder hidden inside Gecko's native engine.
-        if (currentComposer) [currentComposer accessibilityActivate];
-        [strongSelf insertDotThroughKeyboardImplInto:currentGecko retry:retry + 1];
-    });
-}
-
-- (void)maintainEmptyComposerMic {
-    if (!self.root.isViewLoaded || !self.root.view.window) return;
-    if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
-    if (self.root.presentedViewController) return;
 
     UIView *geckoView = CGFindView(self.root.view, @"GeckoView");
-    if (!geckoView) return;
+    if (!geckoView) {
+        self.micHintLabel.hidden = YES;
+        return;
+    }
 
     id composer = CGFindChatGPTComposerAX(geckoView);
-    if (!composer || !CGComposerAccessibilityValueLooksEmpty(composer)) return;
+    if (CGComposerHasUserText(composer)) {
+        self.micHintDismissed = YES;
+        self.micHintLabel.hidden = YES;
+        return;
+    }
 
-    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-    if (now - self.lastComposerAssistAttempt < 3.0) return;
-    self.lastComposerAssistAttempt = now;
+    id heading = CGFindAXText(geckoView, @"what are you working on");
+    if (!heading) {
+        self.micHintLabel.hidden = YES;
+        return;
+    }
 
-    if (![composer accessibilityActivate]) return;
-
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [weakSelf insertDotThroughKeyboardImplInto:geckoView retry:0];
-    });
+    [self positionMicHintAboveHeading:heading];
+    self.micHintLabel.hidden = NO;
+    [self.root.view bringSubviewToFront:self.micHintLabel];
+    [self.root.view bringSubviewToFront:self.header];
 }
 
 - (void)seedWebChatIfNeeded {
@@ -351,6 +388,8 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
         CGFloat top = safe.top + headerHeight;
         content.frame = CGRectMake(0, top, width, MAX(0, height - top - safe.bottom));
     }
+
+    [self.root.view bringSubviewToFront:self.micHintLabel];
     [self.root.view bringSubviewToFront:self.header];
 }
 

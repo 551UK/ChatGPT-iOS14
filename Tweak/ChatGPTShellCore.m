@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 static NSString * const CGBundleID = @"com.551.chatgpt14";
 static NSString * const CGComposerMicSeed = @".";
@@ -31,26 +32,6 @@ static UIView *CGFindView(UIView *root, NSString *needle) {
     return nil;
 }
 
-static UIView *CGFindFirstResponderView(UIView *root) {
-    if (!root) return nil;
-    if (root.isFirstResponder) return root;
-    for (UIView *subview in root.subviews) {
-        UIView *found = CGFindFirstResponderView(subview);
-        if (found) return found;
-    }
-    return nil;
-}
-
-static BOOL CGViewIsDescendantOfView(UIView *view, UIView *ancestor) {
-    if (!view || !ancestor) return NO;
-    UIView *cursor = view;
-    while (cursor) {
-        if (cursor == ancestor) return YES;
-        cursor = cursor.superview;
-    }
-    return NO;
-}
-
 static NSString *CGAXCombinedText(id element) {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
     NSString *label = [element accessibilityLabel];
@@ -78,6 +59,8 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
     NSValue *key = [NSValue valueWithPointer:(__bridge const void *)node];
     if ([visited containsObject:key]) return nil;
     [visited addObject:key];
+
+    // Keep the older search order that was proven to focus the real composer.
     if (CGAXLooksLikeChatGPTComposer(node)) return node;
 
     NSArray *elements = [node accessibilityElements];
@@ -87,13 +70,15 @@ static id CGFindComposerAccessibilityElement(id node, NSMutableSet<NSValue *> *v
             if (found) return found;
         }
     }
+
     NSInteger count = [node accessibilityElementCount];
     if (count != NSNotFound && count > 0 && count < 512) {
-        for (NSInteger i = 0; i < count; i++) {
-            id found = CGFindComposerAccessibilityElement([node accessibilityElementAtIndex:i], visited, depth + 1);
+        for (NSInteger index = 0; index < count; index++) {
+            id found = CGFindComposerAccessibilityElement([node accessibilityElementAtIndex:index], visited, depth + 1);
             if (found) return found;
         }
     }
+
     if ([node isKindOfClass:UIView.class]) {
         for (UIView *subview in [(UIView *)node subviews]) {
             id found = CGFindComposerAccessibilityElement(subview, visited, depth + 1);
@@ -111,7 +96,10 @@ static BOOL CGComposerAccessibilityValueLooksEmpty(id composer) {
     NSString *value = [composer accessibilityValue];
     if (!value.length) return YES;
     NSString *lower = value.lowercaseString;
-    return [lower isEqualToString:@"ask chatgpt"] || [lower isEqualToString:@"ask anything"] || [lower isEqualToString:@"message chatgpt"] || [lower isEqualToString:@"prompt chatgpt"];
+    return [lower isEqualToString:@"ask chatgpt"] ||
+           [lower isEqualToString:@"ask anything"] ||
+           [lower isEqualToString:@"message chatgpt"] ||
+           [lower isEqualToString:@"prompt chatgpt"];
 }
 
 static UIButton *CGFindButtonForAction(UIView *root, NSString *needle) {
@@ -146,12 +134,21 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 @property (nonatomic, strong) NSTimer *composerAssistTimer;
 @property (nonatomic, assign) NSTimeInterval lastComposerAssistAttempt;
 @property (nonatomic, assign) BOOL didSeedWebChat;
+- (instancetype)initWithRoot:(UIViewController *)root;
+- (void)install;
+- (void)layoutShell;
 @end
 
 @implementation CGShellCoordinator
 
-- (instancetype)initWithRoot:(UIViewController *)root { if ((self = [super init])) _root = root; return self; }
-- (void)dealloc { [self.composerAssistTimer invalidate]; }
+- (instancetype)initWithRoot:(UIViewController *)root {
+    if ((self = [super init])) _root = root;
+    return self;
+}
+
+- (void)dealloc {
+    [self.composerAssistTimer invalidate];
+}
 
 - (UIButton *)buttonWithSymbol:(NSString *)symbol action:(SEL)action {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -164,6 +161,7 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
 - (void)install {
     if (!self.root.isViewLoaded || self.header) return;
     CGWebRoot = self.root;
+
     UIView *header = [UIView new];
     header.backgroundColor = UIColor.systemBackgroundColor;
     header.layer.shadowColor = UIColor.separatorColor.CGColor;
@@ -193,7 +191,11 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     [self layoutShell];
     [self seedWebChatIfNeeded];
 
-    self.composerAssistTimer = [NSTimer timerWithTimeInterval:1.25 target:self selector:@selector(maintainEmptyComposerMic) userInfo:nil repeats:YES];
+    self.composerAssistTimer = [NSTimer timerWithTimeInterval:1.0
+                                                       target:self
+                                                     selector:@selector(maintainEmptyComposerMic)
+                                                     userInfo:nil
+                                                      repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.composerAssistTimer forMode:NSRunLoopCommonModes];
 }
 
@@ -210,21 +212,60 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     if (button) [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
-- (void)seedWordJoinerIntoFocusedComposerInside:(UIView *)geckoView retry:(NSInteger)retry {
-    UIView *firstResponder = CGFindFirstResponderView(self.root.view);
-    if (!firstResponder && retry < 5) {
-        __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.025 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [weakSelf seedWordJoinerIntoFocusedComposerInside:geckoView retry:retry + 1];
-        });
+- (id)activeKeyboardImpl {
+    Class keyboardClass = NSClassFromString(@"UIKeyboardImpl");
+    if (!keyboardClass) return nil;
+
+    id keyboard = nil;
+    SEL activeSelector = NSSelectorFromString(@"activeInstance");
+    if ([keyboardClass respondsToSelector:activeSelector]) {
+        keyboard = ((id (*)(id, SEL))objc_msgSend)(keyboardClass, activeSelector);
+    }
+
+    if (!keyboard) {
+        SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+        if ([keyboardClass respondsToSelector:sharedSelector]) {
+            keyboard = ((id (*)(id, SEL))objc_msgSend)(keyboardClass, sharedSelector);
+        }
+    }
+    return keyboard;
+}
+
+- (void)insertDotThroughKeyboardImplInto:(UIView *)geckoView retry:(NSInteger)retry {
+    if (retry > 18) {
+        [self.root.view endEditing:YES];
         return;
     }
-    if (!firstResponder || ![firstResponder conformsToProtocol:@protocol(UIKeyInput)]) return;
-    if (geckoView && !CGViewIsDescendantOfView(firstResponder, geckoView)) return;
-    id<UIKeyInput> input = (id<UIKeyInput>)firstResponder;
-    [input insertText:CGComposerMicSeed];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.015 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [firstResponder resignFirstResponder];
+
+    id composer = CGFindChatGPTComposerAX(geckoView);
+    if (composer && !CGComposerAccessibilityValueLooksEmpty(composer)) {
+        [self.root.view endEditing:YES];
+        return;
+    }
+
+    id keyboard = [self activeKeyboardImpl];
+    SEL insertSelector = NSSelectorFromString(@"insertText:");
+    if (keyboard && [keyboard respondsToSelector:insertSelector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(keyboard, insertSelector, CGComposerMicSeed);
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.055 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        UIView *currentGecko = CGFindView(strongSelf.root.view, @"GeckoView");
+        id currentComposer = currentGecko ? CGFindChatGPTComposerAX(currentGecko) : nil;
+        if (currentComposer && !CGComposerAccessibilityValueLooksEmpty(currentComposer)) {
+            [strongSelf.root.view endEditing:YES];
+            return;
+        }
+
+        // Gecko can take a few ticks to attach its web editor as UIKit's keyboard
+        // delegate. Re-activate the composer and retry UIKeyboardImpl rather than
+        // trying to discover a responder hidden inside Gecko's native engine.
+        if (currentComposer) [currentComposer accessibilityActivate];
+        [strongSelf insertDotThroughKeyboardImplInto:currentGecko retry:retry + 1];
     });
 }
 
@@ -232,64 +273,91 @@ static BOOL CGURLIsChatGPT(NSString *urlString) {
     if (!self.root.isViewLoaded || !self.root.view.window) return;
     if (UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
     if (self.root.presentedViewController) return;
+
     UIView *geckoView = CGFindView(self.root.view, @"GeckoView");
     if (!geckoView) return;
-    if (CGFindFirstResponderView(self.root.view)) return;
+
     id composer = CGFindChatGPTComposerAX(geckoView);
     if (!composer || !CGComposerAccessibilityValueLooksEmpty(composer)) return;
+
     NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-    if (now - self.lastComposerAssistAttempt < 8.0) return;
+    if (now - self.lastComposerAssistAttempt < 3.0) return;
     self.lastComposerAssistAttempt = now;
+
     if (![composer accessibilityActivate]) return;
-    [self seedWordJoinerIntoFocusedComposerInside:geckoView retry:0];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.035 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf insertDotThroughKeyboardImplInto:geckoView retry:0];
+    });
 }
 
 - (void)seedWebChatIfNeeded {
     if (self.didSeedWebChat) return;
     NSString *restoredURL = CGStoredSelectedWebURL();
-    if (CGURLIsChatGPT(restoredURL)) { self.didSeedWebChat = YES; return; }
+    if (CGURLIsChatGPT(restoredURL)) {
+        self.didSeedWebChat = YES;
+        return;
+    }
+
     UIButton *button = CGFindButtonForAction(self.root.view, @"newTabTapped");
     if (!button) {
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [weakSelf seedWebChatIfNeeded]; });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [weakSelf seedWebChatIfNeeded];
+        });
         return;
     }
+
     self.didSeedWebChat = YES;
     [button sendActionsForControlEvents:UIControlEventTouchUpInside];
 }
 
 - (void)layoutShell {
     if (!self.root.isViewLoaded) return;
+
     UIView *content = CGFindView(self.root.view, @"ContentView");
     UIView *chrome = CGFindView(self.root.view, @"BrowserChrome");
     UIView *overview = CGFindView(self.root.view, @"TabOverview");
-    chrome.hidden = YES; chrome.userInteractionEnabled = NO;
-    overview.hidden = YES; overview.userInteractionEnabled = NO;
+
+    chrome.hidden = YES;
+    chrome.userInteractionEnabled = NO;
+    overview.hidden = YES;
+    overview.userInteractionEnabled = NO;
+
     if (content && ![objc_getAssociatedObject(self.root.view, CGLayoutKey) boolValue]) {
         for (NSLayoutConstraint *constraint in self.root.view.constraints.copy) {
-            id first = constraint.firstItem, second = constraint.secondItem;
-            if (first == content || second == content || first == chrome || second == chrome || first == overview || second == overview) constraint.active = NO;
+            id first = constraint.firstItem;
+            id second = constraint.secondItem;
+            if (first == content || second == content || first == chrome || second == chrome || first == overview || second == overview) {
+                constraint.active = NO;
+            }
         }
         content.translatesAutoresizingMaskIntoConstraints = YES;
         content.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         objc_setAssociatedObject(self.root.view, CGLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    CGFloat width = CGRectGetWidth(self.root.view.bounds), height = CGRectGetHeight(self.root.view.bounds);
+
+    CGFloat width = CGRectGetWidth(self.root.view.bounds);
+    CGFloat height = CGRectGetHeight(self.root.view.bounds);
     UIEdgeInsets safe = self.root.view.safeAreaInsets;
     CGFloat headerHeight = 44.0;
     self.header.frame = CGRectMake(0, safe.top, width, headerHeight);
     self.menuButton.frame = CGRectMake(7, 2, 44, 40);
     self.composeButton.frame = CGRectMake(width - 51, 2, 44, 40);
     self.titleLabel.frame = CGRectMake(58, 0, MAX(0, width - 116), headerHeight);
+
     if (content) {
         CGFloat top = safe.top + headerHeight;
         content.frame = CGRectMake(0, top, width, MAX(0, height - top - safe.bottom));
     }
     [self.root.view bringSubviewToFront:self.header];
 }
+
 @end
 
 static IMP CGOriginalLayout = NULL;
+
 static void CGBrowserDidLayout(id self, SEL _cmd) {
     if (CGOriginalLayout) ((void (*)(id, SEL))CGOriginalLayout)(self, _cmd);
     UIViewController *root = (UIViewController *)self;

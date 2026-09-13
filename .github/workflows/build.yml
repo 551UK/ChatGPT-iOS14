@@ -48,7 +48,7 @@ jobs:
 
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Removes the extra top mic button and automatically seeds a dot into an empty ChatGPT composer when a chat opens."
+          NOTES="Removes the previous microphone injection fixes and shows a simple 'Type one digit to reveal microphone' hint above the empty ChatGPT start screen. The hint disappears as soon as typing begins."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber

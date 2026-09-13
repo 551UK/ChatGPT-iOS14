@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 
 @interface CGShellCoordinator : NSObject
 @property (nonatomic, weak) UIViewController *root;
@@ -17,14 +18,35 @@ static UIView *CGDotFindView(UIView *root, NSString *needle) {
     return nil;
 }
 
+static UIView *CGDotFindFirstResponder(UIView *root) {
+    if (!root) return nil;
+    if (root.isFirstResponder) return root;
+    for (UIView *subview in root.subviews) {
+        UIView *found = CGDotFindFirstResponder(subview);
+        if (found) return found;
+    }
+    return nil;
+}
+
+static BOOL CGDotIsDescendant(UIView *view, UIView *ancestor) {
+    UIView *cursor = view;
+    while (cursor) {
+        if (cursor == ancestor) return YES;
+        cursor = cursor.superview;
+    }
+    return NO;
+}
+
 static NSString *CGDotAXText(id element) {
     NSMutableArray *parts = [NSMutableArray array];
     NSString *label = [element accessibilityLabel];
     NSString *value = [element accessibilityValue];
     NSString *hint = [element accessibilityHint];
+    NSString *identifier = [element accessibilityIdentifier];
     if (label.length) [parts addObject:label];
     if (value.length) [parts addObject:value];
     if (hint.length) [parts addObject:hint];
+    if (identifier.length) [parts addObject:identifier];
     return [[parts componentsJoinedByString:@" "] lowercaseString];
 }
 
@@ -69,7 +91,29 @@ static id CGDotFindComposer(id node, NSMutableSet *visited, NSInteger depth) {
     return CGDotLooksLikeComposer(node) ? node : nil;
 }
 
-@implementation CGShellCoordinator (DotPasteFix)
+static void CGDotInsertWhenGeckoIsFocused(UIViewController *root, UIView *geckoView, NSInteger retry) {
+    if (!root || !root.isViewLoaded || !geckoView || retry > 25) return;
+
+    UIView *firstResponder = CGDotFindFirstResponder(root.view);
+    if (firstResponder &&
+        CGDotIsDescendant(firstResponder, geckoView) &&
+        [firstResponder respondsToSelector:@selector(insertText:)]) {
+        ((void (*)(id, SEL, NSString *))objc_msgSend)(firstResponder, @selector(insertText:), @".");
+
+        // End editing immediately after the real Gecko input event. This keeps
+        // the software keyboard from remaining on screen while leaving the dot
+        // in ChatGPT so its genuine microphone control becomes available.
+        [firstResponder resignFirstResponder];
+        [root.view endEditing:YES];
+        return;
+    }
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.02 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CGDotInsertWhenGeckoIsFocused(root, geckoView, retry + 1);
+    });
+}
+
+@implementation CGShellCoordinator (DotResponderFix)
 
 - (void)typeDotForVoice {
     UIViewController *root = self.root;
@@ -79,18 +123,11 @@ static id CGDotFindComposer(id node, NSMutableSet *visited, NSInteger depth) {
     id composer = geckoView ? CGDotFindComposer(geckoView, [NSMutableSet set], 0) : nil;
     if (!composer) return;
 
-    UIPasteboard *pasteboard = UIPasteboard.generalPasteboard;
-    NSArray *savedItems = [pasteboard.items copy] ?: @[];
-
+    // This is the same focus path that previously produced the real caret in
+    // ChatGPT. Once Gecko owns first-responder focus, send a literal dot to that
+    // exact responder instead of guessing at an unfocused engine view.
     [composer accessibilityActivate];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        pasteboard.string = @".";
-        [UIApplication.sharedApplication sendAction:@selector(paste:) to:nil from:nil forEvent:nil];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.04 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            pasteboard.items = savedItems;
-            [root.view endEditing:YES];
-        });
-    });
+    CGDotInsertWhenGeckoIsFocused(root, geckoView, 0);
 }
 
 @end

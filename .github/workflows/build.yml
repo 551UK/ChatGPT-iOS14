@@ -48,7 +48,7 @@ jobs:
 
           DEB="$(ls build/*.deb | head -1)"
           TAG="v$VERSION"
-          NOTES="Removes the temporary web icon overlays and makes the top mic type a real dot directly through Gecko without opening the software keyboard."
+          NOTES="Changes the top mic helper to focus ChatGPT and paste a real dot through Gecko, then restores the clipboard and dismisses the keyboard."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$DEB" --clobber
